@@ -13,7 +13,7 @@ import {
 } from "@fluidframework/core-interfaces";
 import { IContainerRuntime } from "@fluidframework/container-runtime-definitions";
 import { IFluidDataStoreChannel } from "@fluidframework/runtime-definitions";
-import { RequestParser } from "@fluidframework/runtime-utils";
+import { RequestParser, create404Response } from "@fluidframework/runtime-utils";
 import {
     innerRequestHandler,
     createFluidObjectResponse,
@@ -26,10 +26,10 @@ class MockRuntime {
         if (id === "objectId") {
             return {
                 request: async (r) => {
-                    if (r.url === "" || r.url === "route") {
+                    if (r.url === "" || r.url === "/route") {
                         return createFluidObjectResponse({ route: r.url } as IFluidObject);
                     }
-                    return { status: 404, mimeType: "text/plain", value: "not found" };
+                    return create404Response(r);
                 },
             } as IFluidDataStoreChannel;
         }
@@ -49,7 +49,7 @@ class MockRuntime {
             const subRequest = requestParser.createSubRequest(1);
             return fluidObject.request(subRequest);
         }
-        return { status: 404, mimeType: "text/plain", value: "not found" };
+        return create404Response(request);
     }
 }
 
@@ -92,7 +92,7 @@ describe("RequestParser", () => {
             const requestParser = RequestParser.create({ url: "/objectId/route", headers: { wait: true } });
             const response = await innerRequestHandler(requestParser, runtime);
             assert.equal(response.status, 200);
-            assert.equal(response.value.route, "route");
+            assert.equal(response.value.route, "/route");
         });
 
         it("Data store request with non-existing sub route", async () => {

@@ -6,10 +6,10 @@
 import { IDocumentDeltaConnection, IDocumentDeltaConnectionEvents } from "@fluidframework/driver-definitions";
 import {
     ConnectionMode,
+    IClientConfiguration,
     IConnected,
     IDocumentMessage,
     ISequencedDocumentMessage,
-    IServiceConfiguration,
     ISignalClient,
     ISignalMessage,
     ITokenClaims,
@@ -29,7 +29,7 @@ const replayDocumentId = "replayDocId";
 
 const Claims: ITokenClaims = {
     documentId: replayDocumentId,
-    scopes: [ScopeType.DocRead, ScopeType.DocWrite, ScopeType.SummaryWrite],
+    scopes: [ScopeType.DocRead],
     tenantId: "",
     user: {
         id: "",
@@ -114,10 +114,10 @@ export class ReplayFileDeltaConnection
      */
     public static async create(
         documentDeltaStorageService: FileDeltaStorageService): Promise<ReplayFileDeltaConnection> {
-        const mode: ConnectionMode = "write";
+        const mode: ConnectionMode = "read";
         const connection = {
             claims: Claims,
-            clientId: "",
+            clientId: "PseudoClientId",
             existing: true,
             initialMessages: [],
             initialSignals: [],
@@ -190,7 +190,7 @@ export class ReplayFileDeltaConnection
         return this.details.initialClients;
     }
 
-    public get serviceConfiguration(): IServiceConfiguration {
+    public get serviceConfiguration(): IClientConfiguration {
         return this.details.serviceConfiguration;
     }
 

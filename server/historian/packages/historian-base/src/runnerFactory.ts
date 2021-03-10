@@ -2,11 +2,13 @@
  * Copyright (c) Microsoft Corporation. All rights reserved.
  * Licensed under the MIT License.
  */
+import { AsyncLocalStorage } from "async_hooks";
 import * as services from "@fluidframework/server-services";
 import * as core from "@fluidframework/server-services-core";
 import * as utils from "@fluidframework/server-services-utils";
 import { Provider } from "nconf";
 import * as redis from "redis";
+import winston from "winston";
 import * as historianServices from "./services";
 import { normalizePort } from "./utils";
 import { HistorianRunner } from "./runner";
@@ -19,7 +21,8 @@ export class HistorianResources implements utils.IResources {
         public readonly port: string | number,
         public readonly riddler: historianServices.ITenantService,
         public readonly cache: historianServices.RedisCache,
-    ) {
+        public readonly throttler: core.IThrottler,
+        public readonly asyncLocalStorage?: AsyncLocalStorage<string>) {
         this.webServerFactory = new services.BasicWebServerFactory();
     }
 
@@ -46,11 +49,37 @@ export class HistorianResourcesFactory implements utils.IResourcesFactory<Histor
         const tenantCache = new historianServices.RedisTenantCache(redisClient);
         // Create services
         const riddlerEndpoint = config.get("riddler");
-        const riddler = new historianServices.RiddlerService(riddlerEndpoint, tenantCache);
+        const asyncLocalStorage = config.get("asyncLocalStorageInstance")?.[0];
+        const riddler = new historianServices.RiddlerService(riddlerEndpoint, tenantCache, asyncLocalStorage);
+
+        // Redis connection for throttling.
+        const redisConfigForThrottling = config.get("redisForThrottling");
+        const redisOptionsForThrottling: redis.ClientOpts = { password: redisConfigForThrottling.pass };
+        if (redisConfigForThrottling.tls) {
+            redisOptionsForThrottling.tls = {
+                serverName: redisConfigForThrottling.host,
+            };
+        }
+        const redisClientForThrottling = redis.createClient(
+            redisConfigForThrottling.port,
+            redisConfigForThrottling.host,
+            redisOptionsForThrottling);
+
+        const throttleMaxRequestsPerMs = config.get("throttling:maxRequestsPerMs") as number | undefined;
+        const throttleMaxRequestBurst = config.get("throttling:maxRequestBurst") as number | undefined;
+        const throttleMinCooldownIntervalInMs = config.get("throttling:minCooldownIntervalInMs") as number | undefined;
+        const minThrottleIntervalInMs = config.get("throttling:minThrottleIntervalInMs") as number | undefined;
+        const throttleStorageManager = new services.RedisThrottleStorageManager(redisClientForThrottling);
+        const throttlerHelper = new services.ThrottlerHelper(
+            throttleStorageManager,
+            throttleMaxRequestsPerMs,
+            throttleMaxRequestBurst,
+            throttleMinCooldownIntervalInMs);
+        const throttler = new services.Throttler(throttlerHelper, minThrottleIntervalInMs, winston);
 
         const port = normalizePort(process.env.PORT || "3000");
 
-        return new HistorianResources(config, port, riddler, gitCache);
+        return new HistorianResources(config, port, riddler, gitCache, throttler, asyncLocalStorage);
     }
 }
 
@@ -61,6 +90,8 @@ export class HistorianRunnerFactory implements utils.IRunnerFactory<HistorianRes
             resources.config,
             resources.port,
             resources.riddler,
-            resources.cache);
+            resources.cache,
+            resources.throttler,
+            resources.asyncLocalStorage);
     }
 }

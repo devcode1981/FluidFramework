@@ -7,12 +7,12 @@ import { IEventProvider, IErrorEvent, ITelemetryBaseLogger } from "@fluidframewo
 import {
     ConnectionMode,
     IClient,
+    IClientConfiguration,
     ICreateBlobResponse,
     IDocumentMessage,
     IErrorTrackingService,
     INack,
     ISequencedDocumentMessage,
-    IServiceConfiguration,
     ISignalClient,
     ISignalMessage,
     ISnapshotTree,
@@ -24,6 +24,21 @@ import {
 } from "@fluidframework/protocol-definitions";
 import { IResolvedUrl } from "./urlResolver";
 
+export interface IDeltasFetchResult {
+    /**
+     * Sequential set of messages starting from 'from' sequence number.
+     * May be partial result, i.e. not fulfill original request in full.
+     */
+    messages: ISequencedDocumentMessage[];
+
+    /**
+     * If true, storage only partially fulfilled request, but has more ops
+     * If false, the request was fulfilled. If less ops were returned then
+     * requested, then storage does not have more ops in this range.
+     */
+    partialResult: boolean;
+}
+
 /**
  * Interface to provide access to stored deltas for a shared object
  */
@@ -34,8 +49,8 @@ export interface IDeltaStorageService {
     get(
         tenantId: string,
         id: string,
-        from?: number,
-        to?: number): Promise<ISequencedDocumentMessage[]>;
+        from: number,
+        to: number): Promise<IDeltasFetchResult>;
 }
 
 /**
@@ -45,7 +60,15 @@ export interface IDocumentDeltaStorageService {
     /**
      * Retrieves all the delta operations within the exclusive sequence number range
      */
-    get(from?: number, to?: number): Promise<ISequencedDocumentMessage[]>;
+    get(from: number, to: number): Promise<IDeltasFetchResult>;
+}
+
+export interface IDocumentStorageServicePolicies {
+    readonly caching?: LoaderCachingPolicy;
+
+    // If this policy is provided, it tells runtime on ideal size for blobs
+    // Blobs that are smaller than that size should be aggregated into bigger blobs
+    readonly minBlobSize?: number;
 }
 
 /**
@@ -53,6 +76,11 @@ export interface IDocumentDeltaStorageService {
  */
 export interface IDocumentStorageService {
     repositoryUrl: string;
+
+    /**
+     * Policies implemented/instructed by driver.
+     */
+    readonly policies?: IDocumentStorageServicePolicies;
 
     /**
      * Returns the snapshot tree.
@@ -65,11 +93,6 @@ export interface IDocumentStorageService {
     getVersions(versionId: string | null, count: number): Promise<IVersion[]>;
 
     /**
-     * Reads the object with the given ID
-     */
-    read(id: string): Promise<string>;
-
-    /**
      * Writes to the object with the given ID
      */
     write(root: ITree, parents: string[], message: string, ref: string): Promise<IVersion>;
@@ -79,6 +102,9 @@ export interface IDocumentStorageService {
      */
     createBlob(file: ArrayBufferLike): Promise<ICreateBlobResponse>;
 
+    /**
+     * Reads the object with the given ID, returns content in arrayBufferLike
+     */
     readBlob(id: string): Promise<ArrayBufferLike>;
 
     /**
@@ -154,7 +180,7 @@ export interface IDocumentDeltaConnection extends IEventProvider<IDocumentDeltaC
     /**
      * Configuration details provided by the service
      */
-    serviceConfiguration: IServiceConfiguration;
+    serviceConfiguration: IClientConfiguration;
 
     /**
      * Last known sequence number to ordering service at the time of connection
@@ -194,7 +220,10 @@ export enum LoaderCachingPolicy {
 }
 
 export interface IDocumentServicePolicies {
-    readonly caching?: LoaderCachingPolicy;
+    /**
+     * Do not connect to delta stream
+     */
+    readonly storageOnly?: boolean;
 }
 
 export interface IDocumentService {
@@ -261,4 +290,6 @@ export interface ISummaryContext {
      * Parent summary acked handle (from summary ack)
      */
     readonly ackHandle: string | undefined;
+
+    readonly referenceSequenceNumber: number;
 }

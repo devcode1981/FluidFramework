@@ -167,7 +167,6 @@ export class SummaryManager extends EventEmitter implements IDisposable {
     constructor(
         private readonly context: IContainerContext,
         private readonly summariesEnabled: boolean,
-        private readonly enableWorker: boolean,
         parentLogger: ITelemetryLogger,
         private readonly setNextSummarizer: (summarizer: Promise<Summarizer>) => void,
         private nextSummarizerP?: Promise<Summarizer>,
@@ -230,7 +229,7 @@ export class SummaryManager extends EventEmitter implements IDisposable {
     }
 
     public on(event: "summarizer", listener: (clientId: string) => void): this;
-    public on(event: string | symbol, listener: (...args: any[]) => void): this {
+    public on(event: string, listener: (...args: any[]) => void): this {
         return super.on(event, listener);
     }
 
@@ -431,7 +430,6 @@ export class SummaryManager extends EventEmitter implements IDisposable {
                 [DriverHeader.summarizingClient]: true,
                 [LoaderHeader.reconnect]: false,
                 [LoaderHeader.sequenceNumber]: this.context.deltaManager.lastSequenceNumber,
-                [LoaderHeader.executionContext]: this.enableWorker ? "worker" : undefined,
             },
             url: "/_summarizer",
         };

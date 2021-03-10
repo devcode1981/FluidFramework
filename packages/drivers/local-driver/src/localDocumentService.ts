@@ -28,6 +28,7 @@ export class LocalDocumentService implements api.IDocumentService {
         private readonly tenantId: string,
         private readonly documentId: string,
         private readonly documentDeltaConnectionsMap: Map<string, LocalDocumentDeltaConnection>,
+        public readonly policies: api.IDocumentServicePolicies = {},
         private readonly innerDocumentService?: api.IDocumentService,
     ) { }
 
@@ -35,8 +36,10 @@ export class LocalDocumentService implements api.IDocumentService {
      * Creates and returns a document storage service for local use.
      */
     public async connectToStorage(): Promise<api.IDocumentStorageService> {
-        return new socketStorage.DocumentStorageService(this.documentId,
-            new GitManager(new TestHistorian(this.localDeltaConnectionServer.testDbFactory.testDatabase)));
+        return new socketStorage.DocumentStorageService(
+            this.documentId,
+            new GitManager(new TestHistorian(this.localDeltaConnectionServer.testDbFactory.testDatabase)),
+            { minBlobSize: 2048 }); // Test blob aggregation.
     }
 
     /**
@@ -57,10 +60,16 @@ export class LocalDocumentService implements api.IDocumentService {
      * @param client - client data
      */
     public async connectToDeltaStream(client: IClient): Promise<api.IDocumentDeltaConnection> {
+        if (this.policies.storageOnly === true) {
+            throw new Error("can't connect to delta stream in storage-only mode");
+        }
         if (this.innerDocumentService) {
             return this.innerDocumentService.connectToDeltaStream(client);
         }
-        const ordererToken = await this.tokenProvider.fetchOrdererToken();
+        const ordererToken = await this.tokenProvider.fetchOrdererToken(
+            this.tenantId,
+            this.documentId,
+        );
         const documentDeltaConnection = await LocalDocumentDeltaConnection.create(
             this.tenantId,
             this.documentId,
@@ -105,6 +114,7 @@ export function createLocalDocumentService(
     tenantId: string,
     documentId: string,
     documentDeltaConnectionsMap: Map<string, LocalDocumentDeltaConnection>,
+    policies?: api.IDocumentServicePolicies,
     innerDocumentService?: api.IDocumentService): api.IDocumentService {
     return new LocalDocumentService(
         resolvedUrl,
@@ -113,6 +123,7 @@ export function createLocalDocumentService(
         tenantId,
         documentId,
         documentDeltaConnectionsMap,
+        policies,
         innerDocumentService,
     );
 }

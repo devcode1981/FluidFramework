@@ -3,7 +3,8 @@
  * Licensed under the MIT License.
  */
 
-import { assert, fromBase64ToUtf8, unreachableCase } from "@fluidframework/common-utils";
+import { assert, bufferToString, unreachableCase } from "@fluidframework/common-utils";
+import { IFluidSerializer } from "@fluidframework/core-interfaces";
 import {
     FileMode,
     ISequencedDocumentMessage,
@@ -99,6 +100,7 @@ export class ConsensusRegisterCollection<T>
      * @param id - optional name of the consensus register collection
      * @returns newly create consensus register collection (but not attached yet)
      */
+    // eslint-disable-next-line @typescript-eslint/no-shadow
     public static create<T>(runtime: IFluidDataStoreRuntime, id?: string) {
         return runtime.createChannel(id, ConsensusRegisterCollectionFactory.Type) as ConsensusRegisterCollection<T>;
     }
@@ -133,11 +135,11 @@ export class ConsensusRegisterCollection<T>
      * @returns Promise<true> if write was non-concurrent
      */
     public async write(key: string, value: T): Promise<boolean> {
-        const serializedValue = this.stringify(value);
+        const serializedValue = this.stringify(value, this.serializer);
 
         if (!this.isAttached()) {
             // JSON-roundtrip value for local writes to match the behavior of going through the wire
-            this.processInboundWrite(key, this.parse(serializedValue), 0, 0, true);
+            this.processInboundWrite(key, this.parse(serializedValue, this.serializer), 0, 0, true);
             return true;
         }
 
@@ -185,7 +187,7 @@ export class ConsensusRegisterCollection<T>
         return [...this.data.keys()];
     }
 
-    public snapshot(): ITree {
+    protected snapshotCore(serializer: IFluidSerializer): ITree {
         const dataObj: { [key: string]: ILocalData<T> } = {};
         this.data.forEach((v, k) => { dataObj[k] = v; });
 
@@ -196,13 +198,11 @@ export class ConsensusRegisterCollection<T>
                     path: snapshotFileName,
                     type: TreeEntry.Blob,
                     value: {
-                        contents: this.stringify(dataObj),
+                        contents: this.stringify(dataObj, serializer),
                         encoding: "utf-8",
                     },
                 },
             ],
-            // eslint-disable-next-line no-null/no-null
-            id: null,
         };
 
         return tree;
@@ -212,8 +212,9 @@ export class ConsensusRegisterCollection<T>
      * {@inheritDoc @fluidframework/shared-object-base#SharedObject.loadCore}
      */
     protected async loadCore(storage: IChannelStorageService): Promise<void> {
-        const header = await storage.read(snapshotFileName);
-        const dataObj = header !== undefined ? this.parse(fromBase64ToUtf8(header)) : {};
+        const blob = await storage.readBlob(snapshotFileName);
+        const header = bufferToString(blob, "utf8");
+        const dataObj = this.parse(header, this.serializer);
 
         for (const key of Object.keys(dataObj)) {
             assert(dataObj[key].atomic?.value.type !== "Shared",
@@ -234,7 +235,7 @@ export class ConsensusRegisterCollection<T>
             const op: IIncomingRegisterOperation<T> = message.contents;
             switch (op.type) {
                 case "write": {
-                    // back-compat 0.13 refSeq
+                    // backward compatibility: File at rest written with runtime <= 0.13 do not have refSeq
                     // when the refSeq property didn't exist
                     if (op.refSeq === undefined) {
                         op.refSeq = message.referenceSequenceNumber;
@@ -245,7 +246,7 @@ export class ConsensusRegisterCollection<T>
                     assert(refSeqWhenCreated <= message.referenceSequenceNumber);
 
                     const value = incomingOpMatchesCurrentFormat(op)
-                        ? this.parse(op.serializedValue) as T
+                        ? this.parse(op.serializedValue, this.serializer) as T
                         : op.value.value;
                     const winner = this.processInboundWrite(
                         op.key,
@@ -339,12 +340,12 @@ export class ConsensusRegisterCollection<T>
         return winner;
     }
 
-    private stringify(value: any): string {
-        return this.runtime.IFluidSerializer.stringify(value, this.handle);
+    private stringify(value: any, serializer: IFluidSerializer): string {
+        return serializer.stringify(value, this.handle);
     }
 
-    private parse(content: string): any {
+    private parse(content: string, serializer: IFluidSerializer): any {
         // eslint-disable-next-line @typescript-eslint/no-unsafe-return
-        return this.runtime.IFluidSerializer.parse(content);
+        return serializer.parse(content);
     }
 }

@@ -13,7 +13,6 @@ import {
     IDocumentMessage,
     IDocumentSystemMessage,
     INack,
-    IServiceConfiguration,
     ISignalMessage,
     MessageType,
     NackErrorType,
@@ -30,18 +29,6 @@ import {
     getRandomInt,
     generateClientId,
 } from "../utils";
-
-export const DefaultServiceConfiguration: IServiceConfiguration = {
-    blockSize: 64436,
-    maxMessageSize: 16 * 1024,
-    summary: {
-        idleTime: 5000,
-        maxOps: 1000,
-        maxTime: 5000 * 12,
-        maxAckWaitTime: 600000,
-    },
-    enableTraces: true,
-};
 
 interface IRoom {
 
@@ -63,6 +50,10 @@ interface IConnectedClient {
 function getRoomId(room: IRoom) {
     return `${room.tenantId}/${room.documentId}`;
 }
+
+const getSocketConnectThrottleId = (tenantId: string) => `${tenantId}_OpenSocketConn`;
+
+const getSubmitOpThrottleId = (clientId: string, tenantId: string) => `${clientId}_${tenantId}_SubmitOp`;
 
 // Sanitize the received op before sending.
 function sanitizeMessage(message: any): IDocumentMessage {
@@ -95,14 +86,41 @@ function sanitizeMessage(message: any): IDocumentMessage {
 
 const protocolVersions = ["^0.4.0", "^0.3.0", "^0.2.0", "^0.1.0"];
 
-function selectProtocolVersion(connectVersions: string[]): string {
-    let version: string = null;
+function selectProtocolVersion(connectVersions: string[]): string | undefined {
     for (const connectVersion of connectVersions) {
         for (const protocolVersion of protocolVersions) {
             if (semver.intersects(protocolVersion, connectVersion)) {
-                version = protocolVersion;
-                return version;
+                return protocolVersion;
             }
+        }
+    }
+}
+
+/**
+ * @returns ThrottlingError if throttled; undefined if not throttled or no throttler provided.
+ */
+function checkThrottle(
+    throttler: core.IThrottler | undefined,
+    throttleId: string,
+    logger?: core.ILogger): core.ThrottlingError | undefined {
+    if (!throttler) {
+        return;
+    }
+
+    try {
+        throttler.incrementCount(throttleId);
+    } catch (e) {
+        if (e instanceof core.ThrottlingError) {
+            return e;
+        } else {
+            logger?.error(
+                `Throttle increment failed: ${safeStringify(e, undefined, 2)}`,
+                {
+                    messageMetaData: {
+                        key: throttleId,
+                        eventName: "throttling",
+                    },
+                });
         }
     }
 }
@@ -117,7 +135,9 @@ export function configureWebSocketServices(
     logger: core.ILogger,
     maxNumberOfClientsPerDocument: number = 1000000,
     maxTokenLifetimeSec: number = 60 * 60,
-    isTokenExpiryEnabled: boolean = false) {
+    isTokenExpiryEnabled: boolean = false,
+    connectThrottler?: core.IThrottler,
+    submitOpThrottler?: core.IThrottler) {
     webSocketServer.on("connection", (socket: core.IWebSocket) => {
         // Map from client IDs on this connection to the object ID and user info.
         const connectionsMap = new Map<string, core.IOrdererConnection>();
@@ -159,7 +179,15 @@ export function configureWebSocketServices(
         }
 
         async function connectDocument(message: IConnect): Promise<IConnectedClient> {
+            const throttleError = checkThrottle(
+                connectThrottler,
+                getSocketConnectThrottleId(message.tenantId),
+                logger);
+            if (throttleError) {
+                return Promise.reject(throttleError);
+            }
             if (!message.token) {
+                // eslint-disable-next-line prefer-promise-reject-errors
                 return Promise.reject("Must provide an authorization token");
             }
 
@@ -171,12 +199,14 @@ export function configureWebSocketServices(
                 maxTokenLifetimeSec,
                 isTokenExpiryEnabled);
             if (!claims) {
+                // eslint-disable-next-line prefer-promise-reject-errors
                 return Promise.reject("Invalid claims");
             }
 
             try {
                 await tenantManager.verifyToken(claims.tenantId, token);
             } catch (err) {
+                // eslint-disable-next-line prefer-promise-reject-errors
                 return Promise.reject("Invalid token");
             }
 
@@ -206,6 +236,7 @@ export function configureWebSocketServices(
             const connectVersions = message.versions ? message.versions : ["^0.1.0"];
             const version = selectProtocolVersion(connectVersions);
             if (!version) {
+                // eslint-disable-next-line prefer-promise-reject-errors
                 return Promise.reject(
                     `Unsupported client protocol.` +
                     `Server: ${protocolVersions}. ` +
@@ -218,6 +249,7 @@ export function configureWebSocketServices(
             const [details, clients] = await Promise.all([detailsP, clientsP]);
 
             if (clients.length > maxNumberOfClientsPerDocument) {
+                // eslint-disable-next-line prefer-promise-reject-errors
                 return Promise.reject({
                     code: 400,
                     message: "Too many clients are already connected to this document.",
@@ -236,6 +268,7 @@ export function configureWebSocketServices(
                 if (lifeTimeMSec > 0) {
                     setExpirationTimer(lifeTimeMSec);
                 } else {
+                    // eslint-disable-next-line prefer-promise-reject-errors
                     return Promise.reject("Invalid token expiry");
                 }
             }
@@ -267,9 +300,11 @@ export function configureWebSocketServices(
                     existing: details.existing,
                     maxMessageSize: connection.maxMessageSize,
                     mode: "write",
-                    // Back-compat, removal tracked with issue #4346
-                    parentBranch: null,
-                    serviceConfiguration: connection.serviceConfiguration,
+                    serviceConfiguration: {
+                        blockSize: connection.serviceConfiguration.blockSize,
+                        maxMessageSize: connection.serviceConfiguration.maxMessageSize,
+                        summary: connection.serviceConfiguration.summary,
+                    },
                     initialClients: clients,
                     initialMessages: [],
                     initialSignals: [],
@@ -283,9 +318,11 @@ export function configureWebSocketServices(
                     existing: details.existing,
                     maxMessageSize: 1024, // Readonly client can't send ops.
                     mode: "read",
-                    // Back-compat, removal tracked with issue #4346
-                    parentBranch: null, // Does not matter for now.
-                    serviceConfiguration: DefaultServiceConfiguration,
+                    serviceConfiguration: {
+                        blockSize: core.DefaultServiceConfiguration.blockSize,
+                        maxMessageSize: core.DefaultServiceConfiguration.maxMessageSize,
+                        summary: core.DefaultServiceConfiguration.summary,
+                    },
                     initialClients: clients,
                     initialMessages: [],
                     initialSignals: [],
@@ -307,10 +344,13 @@ export function configureWebSocketServices(
             connectDocument(connectionMessage).then(
                 (message) => {
                     socket.emit("connect_document_success", message.connection);
-                    socket.emitToRoom(
-                        getRoomId(roomMap.get(message.connection.clientId)),
-                        "signal",
-                        createRoomJoinMessage(message.connection.clientId, message.details));
+                    const room = roomMap.get(message.connection.clientId);
+                    if (room) {
+                        socket.emitToRoom(
+                            getRoomId(room),
+                            "signal",
+                            createRoomJoinMessage(message.connection.clientId, message.details));
+                    }
                 },
                 (error) => {
                     const messageMetaData = {
@@ -327,10 +367,11 @@ export function configureWebSocketServices(
             "submitOp",
             (clientId: string, messageBatches: (IDocumentMessage | IDocumentMessage[])[]) => {
                 // Verify the user has an orderer connection.
-                if (!connectionsMap.has(clientId)) {
+                const connection = connectionsMap.get(clientId);
+                if (!connection) {
                     let nackMessage: INack;
-
-                    if (hasWriteAccess(scopeMap.get(clientId))) {
+                    const clientScope = scopeMap.get(clientId);
+                    if (clientScope && hasWriteAccess(clientScope)) {
                         nackMessage = createNackMessage(400, NackErrorType.BadRequestError, "Readonly client");
                     } else if (roomMap.has(clientId)) {
                         nackMessage = createNackMessage(403, NackErrorType.InvalidScopeError, "Invalid scope");
@@ -340,18 +381,32 @@ export function configureWebSocketServices(
 
                     socket.emit("nack", "", [nackMessage]);
                 } else {
-                    const connection = connectionsMap.get(clientId);
+                    const throttleError = checkThrottle(
+                        submitOpThrottler,
+                        getSubmitOpThrottleId(clientId, connection.tenantId),
+                        logger);
+                    if (throttleError) {
+                        const nackMessage = createNackMessage(
+                            throttleError.code,
+                            NackErrorType.ThrottlingError,
+                            throttleError.message,
+                            throttleError.retryAfter);
+                        socket.emit("nack", "", [nackMessage]);
+                        return;
+                    }
 
                     messageBatches.forEach((messageBatch) => {
                         const messages = Array.isArray(messageBatch) ? messageBatch : [messageBatch];
                         const sanitized = messages
                             .filter((message) => {
                                 if (message.type === MessageType.RoundTrip) {
-                                    // End of tracking. Write traces.
-                                    metricLogger.writeLatencyMetric("latency", message.traces).catch(
-                                        (error) => {
-                                            logger.error(error.stack);
-                                        });
+                                    if (message.traces) {
+                                        // End of tracking. Write traces.
+                                        metricLogger.writeLatencyMetric("latency", message.traces).catch(
+                                            (error) => {
+                                                logger.error(error.stack);
+                                            });
+                                    }
                                     return false;
                                 } else {
                                     return true;
@@ -372,7 +427,8 @@ export function configureWebSocketServices(
             "submitSignal",
             (clientId: string, contentBatches: (IDocumentMessage | IDocumentMessage[])[]) => {
                 // Verify the user has subscription to the room.
-                if (!roomMap.has(clientId)) {
+                const room = roomMap.get(clientId);
+                if (!room) {
                     const nackMessage = createNackMessage(400, NackErrorType.BadRequestError, "Nonexistent client");
                     socket.emit("nack", "", [nackMessage]);
                 } else {
@@ -385,7 +441,7 @@ export function configureWebSocketServices(
                                 content,
                             };
 
-                            socket.emitToRoom(getRoomId(roomMap.get(clientId)), "signal", signalMessage);
+                            socket.emitToRoom(getRoomId(room), "signal", signalMessage);
                         }
                     });
                 }
@@ -405,7 +461,7 @@ export function configureWebSocketServices(
                 connection.disconnect();
             }
             // Send notification messages for all client IDs in the room map
-            const removeP = [];
+            const removeP: Promise<void>[] = [];
             for (const [clientId, room] of roomMap) {
                 const messageMetaData = {
                     documentId: room.documentId,

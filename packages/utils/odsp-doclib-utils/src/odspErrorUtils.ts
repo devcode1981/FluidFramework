@@ -3,7 +3,9 @@
  * Licensed under the MIT License.
  */
 
+import { ITelemetryProperties } from "@fluidframework/common-definitions";
 import { DriverError, DriverErrorType } from "@fluidframework/driver-definitions";
+import { TelemetryLogger } from "@fluidframework/telemetry-utils";
 import {
     AuthorizationError,
     createGenericNetworkError,
@@ -13,6 +15,8 @@ import {
     NonRetryableError,
     OnlineStatus,
 } from "@fluidframework/driver-utils";
+import { parseAuthErrorClaims } from "./parseAuthErrorClaims";
+import { parseAuthErrorTenant } from "./parseAuthErrorTenant";
 
 export const offlineFetchFailureStatusCode: number = 709;
 export const fetchFailureStatusCode: number = 710;
@@ -27,6 +31,8 @@ export const fetchTimeoutStatusCode = 713;
 // with the server epoch version, the server throws this error code.
 // This indicates that the file/container has been modified externally.
 export const fluidEpochMismatchError = 409;
+// Error code for when the fetched token is null.
+export const fetchTokenErrorCode = 724;
 
 export enum OdspErrorType {
     /**
@@ -64,6 +70,8 @@ export enum OdspErrorType {
      * does not match the one at the server.
      */
     epochVersionMismatch = "epochVersionMismatch",
+
+    fetchTokenError = "fetchTokenError",
 }
 
 /**
@@ -80,58 +88,94 @@ export type OdspError =
     | DriverError
     | IOdspError;
 
+export function getSPOAndGraphRequestIdsFromResponse(headers: { get: (id: string) => string | undefined | null}) {
+    interface LoggingHeader {
+        headerName: string;
+        logName: string;
+    }
+    // We rename headers so that otel doesn't scrub them away. Otel doesn't allow
+    // certain characters in headers including '-'
+    const headersToLog: LoggingHeader[] = [
+        { headerName: "sprequestguid", logName: "sprequestguid" },
+        { headerName: "request-id", logName: "requestId" },
+        { headerName: "client-request-id", logName: "clientRequestId" },
+        { headerName: "x-msedge-ref", logName: "xMsedgeRef" },
+        { headerName: "X-Fluid-Retries", logName: "serverRetries" },
+    ];
+    const additionalProps: ITelemetryProperties = {
+        sprequestduration: TelemetryLogger.numberFromString(headers.get("sprequestduration")),
+        contentsize: TelemetryLogger.numberFromString(headers.get("content-length")),
+        isAfd: headers["X-Fluid-Retries"] !== undefined,
+    };
+    headersToLog.forEach((header) => {
+        const headerValue = headers.get(header.headerName);
+        // eslint-disable-next-line no-null/no-null
+        if (headerValue !== undefined && headerValue !== null) {
+            additionalProps[header.logName] = headerValue;
+        }
+    });
+    return additionalProps;
+}
+
 export function createOdspNetworkError(
     errorMessage: string,
-    statusCode?: number,
+    statusCode: number,
     retryAfterSeconds?: number,
-    claims?: string,
+    response?: Response,
+    responseText?: string,
 ): OdspError {
     let error: OdspError;
-
     switch (statusCode) {
         case 400:
             error = new GenericNetworkError(errorMessage, false, statusCode);
             break;
         case 401:
         case 403:
-            error = new AuthorizationError(errorMessage, claims);
+            const claims = response?.headers ? parseAuthErrorClaims(response.headers) : undefined;
+            const tenantId = response?.headers ? parseAuthErrorTenant(response.headers) : undefined;
+            error = new AuthorizationError(errorMessage, claims, tenantId, statusCode);
             break;
         case 404:
-            error = new NetworkErrorBasic(errorMessage, DriverErrorType.fileNotFoundOrAccessDeniedError, false);
+            error = new NetworkErrorBasic(
+                errorMessage, DriverErrorType.fileNotFoundOrAccessDeniedError, false, statusCode);
             break;
         case 406:
-            error = new NetworkErrorBasic(errorMessage, DriverErrorType.unsupportedClientProtocolVersion, false);
+            error = new NetworkErrorBasic(
+                errorMessage, DriverErrorType.unsupportedClientProtocolVersion, false, statusCode);
             break;
         case fluidEpochMismatchError:
-            error = new NonRetryableError(errorMessage, OdspErrorType.epochVersionMismatch);
+            error = new NonRetryableError(errorMessage, OdspErrorType.epochVersionMismatch, statusCode);
             break;
         case 413:
-            error = new NonRetryableError(errorMessage, OdspErrorType.snapshotTooBig);
+            error = new NonRetryableError(errorMessage, OdspErrorType.snapshotTooBig, statusCode);
             break;
         case 414:
         case invalidFileNameStatusCode:
-            error = new NonRetryableError(errorMessage, OdspErrorType.invalidFileNameError);
+            error = new NonRetryableError(errorMessage, OdspErrorType.invalidFileNameError, statusCode);
             break;
         case 500:
-            error = new GenericNetworkError(errorMessage, true);
+            error = new GenericNetworkError(errorMessage, true, statusCode);
             break;
         case 501:
-            error = new NonRetryableError(errorMessage, OdspErrorType.fluidNotEnabled);
+            error = new NonRetryableError(errorMessage, OdspErrorType.fluidNotEnabled, statusCode);
             break;
         case 507:
-            error = new NonRetryableError(errorMessage, OdspErrorType.outOfStorageError);
+            error = new NonRetryableError(errorMessage, OdspErrorType.outOfStorageError, statusCode);
             break;
         case offlineFetchFailureStatusCode:
-            error = new NetworkErrorBasic(errorMessage, DriverErrorType.offlineError, true);
+            error = new NetworkErrorBasic(errorMessage, DriverErrorType.offlineError, true, statusCode);
             break;
         case fetchFailureStatusCode:
-            error = new NetworkErrorBasic(errorMessage, DriverErrorType.fetchFailure, true);
+            error = new NetworkErrorBasic(errorMessage, DriverErrorType.fetchFailure, true, statusCode);
             break;
         case fetchIncorrectResponse:
-            error = new NetworkErrorBasic(errorMessage, DriverErrorType.incorrectServerResponse, false);
+            error = new NetworkErrorBasic(errorMessage, DriverErrorType.incorrectServerResponse, false, statusCode);
             break;
         case fetchTimeoutStatusCode:
-            error = new NonRetryableError(errorMessage, OdspErrorType.fetchTimeout);
+            error = new NonRetryableError(errorMessage, OdspErrorType.fetchTimeout, statusCode);
+            break;
+        case fetchTokenErrorCode:
+            error = new NonRetryableError(errorMessage, OdspErrorType.fetchTokenError, statusCode);
             break;
         default:
             error = createGenericNetworkError(errorMessage, true, retryAfterSeconds, statusCode);
@@ -139,6 +183,19 @@ export function createOdspNetworkError(
 
     error.online = OnlineStatus[isOnline()];
 
+    const errorAsAny = error as any;
+
+    errorAsAny.response = responseText;
+    if (response) {
+        errorAsAny.responseType = response.type;
+        if (response.headers) {
+            const headers = getSPOAndGraphRequestIdsFromResponse(response.headers);
+            for (const key of Object.keys(headers))  {
+                errorAsAny[key] = headers[key];
+            }
+            errorAsAny.serverEpoch = response.headers.get("x-fluid-epoch");
+        }
+    }
     return error;
 }
 
@@ -149,12 +206,27 @@ export function throwOdspNetworkError(
     errorMessage: string,
     statusCode: number,
     response?: Response,
-) {
+    responseText?: string,
+): never {
     const networkError = createOdspNetworkError(
-        response ? `${errorMessage}, msg = ${response.statusText}, type = ${response.type}` : errorMessage,
+        response && response.statusText !== "" ? `${errorMessage} (${response.statusText})` : errorMessage,
         statusCode,
-        undefined /* retryAfterSeconds */,
-        undefined);
+        response ? numberFromHeader(response.headers.get("retry-after")) : undefined, /* retryAfterSeconds */
+        response,
+        responseText);
 
+    // eslint-disable-next-line @typescript-eslint/no-throw-literal
     throw networkError;
+}
+
+function numberFromHeader(header: string | null): number | undefined {
+    // eslint-disable-next-line no-null/no-null
+    if (header === null) {
+        return undefined;
+    }
+    const n = Number(header);
+    if (Number.isNaN(n)) {
+        return undefined;
+    }
+    return n;
 }

@@ -20,7 +20,7 @@ import {
     LocalReference,
     ReferenceType,
 } from "@fluidframework/merge-tree";
-import { IFluidHandle } from "@fluidframework/core-interfaces";
+import { IFluidHandle, IFluidSerializer } from "@fluidframework/core-interfaces";
 import { FileMode, TreeEntry, ITree } from "@fluidframework/protocol-definitions";
 import { ObjectStoragePartition } from "@fluidframework/runtime-utils";
 import { HandleTable, Handle, isHandleValid } from "./handletable";
@@ -205,7 +205,8 @@ export class PermutationVector extends Client {
             return undefined;
         }
 
-        return this.getPosition(segment) + offset;
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+        return this.getPosition(segment) + offset!;
     }
 
     public handleToPosition(handle: Handle, localSeq = this.mergeTree.collabWindow.localSeq) {
@@ -266,27 +267,30 @@ export class PermutationVector extends Client {
     }
 
     // Constructs an ITreeEntry for the cell data.
-    public snapshot(runtime: IFluidDataStoreRuntime, handle: IFluidHandle): ITree {
+    public snapshot(runtime: IFluidDataStoreRuntime, handle: IFluidHandle, serializer: IFluidSerializer): ITree {
         return {
             entries: [
                 {
                     mode: FileMode.Directory,
                     path: SnapshotPath.segments,
                     type: TreeEntry.Tree,
-                    value: super.snapshot(runtime, handle, /* catchUpMsgs: */[]),
+                    value: super.snapshot(runtime, handle, serializer, /* catchUpMsgs: */[]),
                 },
-                serializeBlob(runtime, handle, SnapshotPath.handleTable, this.handleTable.snapshot()),
+                serializeBlob(handle, SnapshotPath.handleTable, this.handleTable.snapshot(), serializer),
             ],
-            id: null,   // eslint-disable-line no-null/no-null
         };
     }
 
-    public async load(runtime: IFluidDataStoreRuntime, storage: IChannelStorageService) {
-        const handleTableData = await deserializeBlob(runtime, storage, SnapshotPath.handleTable);
+    public async load(
+        runtime: IFluidDataStoreRuntime,
+        storage: IChannelStorageService,
+        serializer: IFluidSerializer,
+    ) {
+        const handleTableData = await deserializeBlob(storage, SnapshotPath.handleTable, serializer);
 
         this.handleTable = HandleTable.load<never>(handleTableData);
 
-        return super.load(runtime, new ObjectStoragePartition(storage, SnapshotPath.segments));
+        return super.load(runtime, new ObjectStoragePartition(storage, SnapshotPath.segments), serializer);
     }
 
     private readonly onDelta = (

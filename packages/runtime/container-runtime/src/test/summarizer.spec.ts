@@ -13,45 +13,9 @@ import {
     ISummaryProposal,
     MessageType,
 } from "@fluidframework/protocol-definitions";
-import { ITelemetryLogger, ITelemetryBaseEvent } from "@fluidframework/common-definitions";
-import { TelemetryLogger } from "@fluidframework/telemetry-utils";
+import { MockLogger } from "@fluidframework/test-runtime-utils";
 import { RunningSummarizer } from "../summarizer";
 import { SummaryCollection } from "../summaryCollection";
-
-class MockLogger extends TelemetryLogger implements ITelemetryLogger {
-    events: ITelemetryBaseEvent[] = [];
-
-    constructor() { super(); }
-
-    send(event: ITelemetryBaseEvent): void {
-        this.events.push(event);
-    }
-
-    matchEvents(expectedEvents: Omit<ITelemetryBaseEvent, "category">[]) {
-        let iExpectedEvent = 0;
-        this.events.forEach((event) => {
-            if (iExpectedEvent < expectedEvents.length &&
-                MockLogger.eventsMatch(event, expectedEvents[iExpectedEvent])
-            ) {
-                // We found the next expected event; increment
-                ++iExpectedEvent;
-            }
-        });
-
-        // Remove the events so far; next call will just compare subsequent events from here
-        this.events = [];
-
-        // How many expected events were left over? Hopefully none.
-        const unmatchedExpectedEventCount = expectedEvents.length - iExpectedEvent;
-        assert(unmatchedExpectedEventCount >= 0);
-        return unmatchedExpectedEventCount === 0;
-    }
-
-    private static eventsMatch(actual: ITelemetryBaseEvent, expected: Omit<ITelemetryBaseEvent, "category">): boolean {
-        const masked = { ...actual, ...expected };
-        return JSON.stringify(masked) === JSON.stringify(actual);
-    }
-}
 
 describe("Runtime", () => {
     describe("Container Runtime", () => {
@@ -78,13 +42,14 @@ describe("Runtime", () => {
 
                 const flushPromises = async () => new Promise((resolve) => process.nextTick(resolve));
 
-                async function emitNextOp(increment: number = 1) {
+                async function emitNextOp(increment: number = 1, timestamp: number = Date.now()) {
                     lastRefSeq += increment;
                     const op: Partial<ISequencedDocumentMessage> = {
                         sequenceNumber: lastRefSeq,
-                        timestamp: Date.now(),
+                        timestamp,
                     };
                     summarizer.handleOp(undefined, op as ISequencedDocumentMessage);
+                    summaryCollection.handleOp(op as ISequencedDocumentMessage);
                     await flushPromises();
                 }
 
@@ -99,6 +64,7 @@ describe("Runtime", () => {
                         contents: {
                             handle: "test-broadcast-handle",
                         },
+                        timestamp: Date.now(),
                     } as ISequencedDocumentMessage);
                 }
 
@@ -131,7 +97,7 @@ describe("Runtime", () => {
                     runCount = 0;
                     lastRefSeq = 0;
                     mockLogger = new MockLogger();
-                    summaryCollection = new SummaryCollection(0);
+                    summaryCollection = new SummaryCollection(0, mockLogger);
                     summarizer = await RunningSummarizer.start(
                         summarizerClientId,
                         onBehalfOfClientId,
@@ -165,6 +131,7 @@ describe("Runtime", () => {
                         { refSequenceNumber: 0, summaryTime: Date.now() },
                         false,
                         () => { },
+                        summaryCollection,
                     );
                 });
 
@@ -317,6 +284,50 @@ describe("Runtime", () => {
                     await emitNextOp(summaryConfig.maxOps + 1);
                     assert.strictEqual(runCount, 2);
                     deferGenerateSummary.resolve();
+                });
+
+                it("Should summarize immediately if summary ack is missing", async () => {
+                    assert.strictEqual(runCount, 0);
+                    // Simulate as summary op was in opstream.
+                    emitBroadcast();
+                    // Start the timer so that it can be turned off due to timeout by op.
+                    // eslint-disable-next-line @typescript-eslint/dot-notation
+                    summarizer["pendingAckTimer"].start();
+
+                    await emitNextOp(1);
+                    // eslint-disable-next-line @typescript-eslint/dot-notation
+                    assert.strictEqual(summarizer["pendingAckTimer"].hasTimer, true,
+                        "Timer should be running as timestamp is within maxAckWaitTime");
+
+                    // Emit next op after maxAckWaitTime
+                    await emitNextOp(1, Date.now() + summaryConfig.maxAckWaitTime + 1000);
+                    assert(mockLogger.matchEvents([
+                        { eventName: "Running:MissingSummaryAckFoundByOps" },
+                    ]), "unexpected log sequence 1");
+
+                    // eslint-disable-next-line @typescript-eslint/dot-notation
+                    assert.strictEqual(summarizer["pendingAckTimer"].hasTimer, false,
+                        "Timer should be off by the above op");
+
+                    await emitNextOp(summaryConfig.maxOps + 1);
+                    assert.strictEqual(runCount, 1);
+                    assert(mockLogger.matchEvents([
+                        { eventName: "Running:GenerateSummary_start",
+                            summaryGenTag: runCount, message: "maxOps" },
+                        { eventName: "Running:GenerateSummary_end",
+                            summaryGenTag: runCount, message: "maxOps" },
+                        { eventName: "Running:SummaryOp", summaryGenTag: runCount },
+                    ]), "unexpected log sequence 2");
+
+                    assert(!mockLogger.matchEvents([
+                        { eventName: "Running:SummaryAck" },
+                    ]), "No ack expected yet");
+
+                    // Now emit ack
+                    await emitAck();
+                    assert(mockLogger.matchEvents([
+                        { eventName: "Running:SummaryAck", summaryGenTag: runCount },
+                    ]), "unexpected log sequence 3");
                 });
             });
         });

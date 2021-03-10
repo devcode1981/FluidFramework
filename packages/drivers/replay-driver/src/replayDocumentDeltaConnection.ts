@@ -11,17 +11,17 @@ import {
 } from "@fluidframework/driver-definitions";
 import {
     ConnectionMode,
+    IClientConfiguration,
     IConnected,
     IDocumentMessage,
     ISequencedDocumentMessage,
-    IServiceConfiguration,
     ISignalClient,
     ISignalMessage,
     ITokenClaims,
     IVersion,
     ScopeType,
 } from "@fluidframework/protocol-definitions";
-import { TypedEventEmitter } from "@fluidframework/common-utils";
+import { assert, TypedEventEmitter } from "@fluidframework/common-utils";
 import { debug } from "./debug";
 import { ReplayController } from "./replayController";
 
@@ -67,7 +67,7 @@ export class ReplayControllerStatic extends ReplayController {
         return version ? Promise.reject(new Error("Invalid operation")) : null;
     }
 
-    public async read(blobId: string): Promise<string> {
+    public async readBlob(blobId: string): Promise<ArrayBufferLike> {
         return Promise.reject(new Error("Invalid operation"));
     }
 
@@ -197,15 +197,13 @@ export class ReplayDocumentDeltaConnection
         controller: ReplayController): IDocumentDeltaConnection {
         const connection: IConnected = {
             claims: ReplayDocumentDeltaConnection.claims,
-            clientId: "",
+            clientId: "PseudoClientId",
             existing: true,
             initialMessages: [],
             initialSignals: [],
             initialClients: [],
             maxMessageSize: ReplayDocumentDeltaConnection.ReplayMaxMessageSize,
-            mode: "write",
-            // Back-compat, removal tracked with issue #4346
-            parentBranch: null,
+            mode: "read",
             serviceConfiguration: {
                 blockSize: 64436,
                 maxMessageSize: 16 * 1024,
@@ -232,7 +230,7 @@ export class ReplayDocumentDeltaConnection
 
     private static readonly claims: ITokenClaims = {
         documentId: ReplayDocumentId,
-        scopes: [ScopeType.DocRead, ScopeType.DocWrite],
+        scopes: [ScopeType.DocRead],
         tenantId: "",
         user: {
             id: "",
@@ -274,7 +272,7 @@ export class ReplayDocumentDeltaConnection
         return this.details.initialClients;
     }
 
-    public get serviceConfiguration(): IServiceConfiguration {
+    public get serviceConfiguration(): IClientConfiguration {
         return this.details.serviceConfiguration;
     }
 
@@ -314,11 +312,12 @@ export class ReplayDocumentDeltaConnection
         do {
             const fetchTo = controller.fetchTo(currentOp);
 
-            const fetchedOps = await documentStorageService.get(currentOp, fetchTo);
+            const { messages, partialResult } = await documentStorageService.get(currentOp, fetchTo);
 
-            if (fetchedOps.length === 0) {
+            if (messages.length === 0) {
                 // No more ops. But, they can show up later, either because document was just created,
                 // or because another client keeps submitting new ops.
+                assert(!partialResult);
                 if (controller.isDoneFetch(currentOp, undefined)) {
                     break;
                 }
@@ -327,10 +326,10 @@ export class ReplayDocumentDeltaConnection
             }
 
             replayPromiseChain = replayPromiseChain.then(
-                async () => controller.replay((ops) => this.emit("op", ReplayDocumentId, ops), fetchedOps));
+                async () => controller.replay((ops) => this.emit("op", ReplayDocumentId, ops), messages));
 
-            currentOp += fetchedOps.length;
-            done = controller.isDoneFetch(currentOp, fetchedOps[fetchedOps.length - 1].timestamp);
+            currentOp += messages.length;
+            done = controller.isDoneFetch(currentOp, messages[messages.length - 1].timestamp);
         } while (!done);
 
         return replayPromiseChain;

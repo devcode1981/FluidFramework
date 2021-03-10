@@ -3,7 +3,8 @@
  * Licensed under the MIT License.
  */
 
-import { fromBase64ToUtf8 } from "@fluidframework/common-utils";
+import { bufferToString } from "@fluidframework/common-utils";
+import { IFluidSerializer } from "@fluidframework/core-interfaces";
 import { addBlobToTree } from "@fluidframework/protocol-base";
 import {
     ISequencedDocumentMessage,
@@ -29,6 +30,8 @@ import { IMapDataObjectSerializable, MapKernel } from "./mapKernel";
 import { pkgVersion } from "./packageVersion";
 
 interface IMapSerializationFormat {
+    /** @deprecated - added to prevent buggy caching. remove once all loaders past 0.35 */
+    absolutePath?: string,
     blobs?: string[];
     content: IMapDataObjectSerializable;
 }
@@ -150,7 +153,7 @@ export class SharedMap extends SharedObject<ISharedMapEvents> implements IShared
     ) {
         super(id, runtime, attributes);
         this.kernel = new MapKernel(
-            runtime,
+            this.serializer,
             this.handle,
             (op, localOpMetadata) => this.submitLocalMessage(op, localOpMetadata),
             () => this.isAttached(),
@@ -205,7 +208,7 @@ export class SharedMap extends SharedObject<ISharedMapEvents> implements IShared
     /**
     * {@inheritDoc ISharedMap.get}
     */
-    public get<T = any>(key: string): T {
+    public get<T = any>(key: string): T | undefined {
         return this.kernel.get<T>(key);
     }
 
@@ -246,9 +249,9 @@ export class SharedMap extends SharedObject<ISharedMapEvents> implements IShared
     }
 
     /**
-    * {@inheritDoc @fluidframework/shared-object-base#SharedObject.snapshot}
+    * {@inheritDoc @fluidframework/shared-object-base#SharedObject.snapshotCore}
     */
-    public snapshot(): ITree {
+   protected snapshotCore(serializer: IFluidSerializer): ITree {
         let currentSize = 0;
         let counter = 0;
         let headerBlob: IMapDataObjectSerializable = {};
@@ -256,10 +259,9 @@ export class SharedMap extends SharedObject<ISharedMapEvents> implements IShared
 
         const tree: ITree = {
             entries: [],
-            id: null,
         };
 
-        const data = this.kernel.getSerializedStorage();
+        const data = this.kernel.getSerializedStorage(serializer);
 
         // If single property exceeds this size, it goes into its own blob
         const MinValueSizeSeparateSnapshotBlob = 8 * 1024;
@@ -313,6 +315,7 @@ export class SharedMap extends SharedObject<ISharedMapEvents> implements IShared
         }
 
         const header: IMapSerializationFormat = {
+            absolutePath: this.handle.absolutePath,
             blobs,
             content: headerBlob,
         };
@@ -322,24 +325,24 @@ export class SharedMap extends SharedObject<ISharedMapEvents> implements IShared
     }
 
     public getSerializableStorage(): IMapDataObjectSerializable {
-        return this.kernel.getSerializableStorage();
+        return this.kernel.getSerializableStorage(this.serializer);
     }
 
     /**
     * {@inheritDoc @fluidframework/shared-object-base#SharedObject.loadCore}
     */
     protected async loadCore(storage: IChannelStorageService) {
-        const header = await storage.read(snapshotFileName);
+        const blob = await storage.readBlob(snapshotFileName);
+        const data = bufferToString(blob, "utf8");
 
-        const data = fromBase64ToUtf8(header);
         // eslint-disable-next-line @typescript-eslint/ban-types
         const json = JSON.parse(data) as object;
         const newFormat = json as IMapSerializationFormat;
         if (Array.isArray(newFormat.blobs)) {
             this.kernel.populateFromSerializable(newFormat.content);
             await Promise.all(newFormat.blobs.map(async (value) => {
-                const blob = await storage.read(value);
-                const blobData = fromBase64ToUtf8(blob);
+                const newBlob = await storage.readBlob(value);
+                const blobData = bufferToString(newBlob, "utf8");
                 this.kernel.populateFromSerializable(JSON.parse(blobData) as IMapDataObjectSerializable);
             }));
         } else {

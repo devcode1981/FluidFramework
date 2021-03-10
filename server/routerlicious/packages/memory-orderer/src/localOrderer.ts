@@ -5,16 +5,13 @@
 
 import { merge } from "lodash";
 import { ProtocolOpHandler } from "@fluidframework/protocol-base";
-import { IClient, IServiceConfiguration } from "@fluidframework/protocol-definitions";
+import { IClient } from "@fluidframework/protocol-definitions";
 import {
-    ActivityCheckingTimeout,
     BroadcasterLambda,
     CheckpointManager,
-    ClientSequenceTimeout,
-    DefaultServiceConfiguration,
+    createDeliCheckpointManagerFromCollection,
     DeliLambda,
     ForemanLambda,
-    NoopConsolidationTimeout,
     ScribeLambda,
     ScriptoriumLambda,
     SummaryReader,
@@ -22,6 +19,7 @@ import {
 } from "@fluidframework/server-lambdas";
 import { IGitManager } from "@fluidframework/server-services-client";
 import {
+    DefaultServiceConfiguration,
     IContext,
     IDeliState,
     IDatabaseManager,
@@ -32,6 +30,7 @@ import {
     IOrdererConnection,
     IPublisher,
     IScribe,
+    IServiceConfiguration,
     ITaskMessageSender,
     ITenantManager,
     ITopic,
@@ -95,7 +94,6 @@ export class LocalOrderer implements IOrderer {
         taskMessageSender: ITaskMessageSender,
         tenantManager: ITenantManager,
         permission: any,
-        maxMessageSize: number,
         tokenGenerator: TokenGenerator,
         logger: ILogger,
         gitManager?: IGitManager,
@@ -111,9 +109,7 @@ export class LocalOrderer implements IOrderer {
         foremanContext: IContext = new LocalContext(logger),
         scribeContext: IContext = new LocalContext(logger),
         deliContext: IContext = new LocalContext(logger),
-        clientTimeout: number = ClientSequenceTimeout,
         serviceConfiguration: Partial<IServiceConfiguration> = {},
-        scribeNackOnSummarizeException = false,
     ) {
         const documentDetails = await setup.documentP();
 
@@ -126,7 +122,6 @@ export class LocalOrderer implements IOrderer {
             tenantManager,
             gitManager,
             permission,
-            maxMessageSize,
             tokenGenerator,
             pubSub,
             broadcasterContext,
@@ -134,9 +129,7 @@ export class LocalOrderer implements IOrderer {
             foremanContext,
             scribeContext,
             deliContext,
-            clientTimeout,
-            merge({}, DefaultServiceConfiguration, serviceConfiguration),
-            scribeNackOnSummarizeException);
+            merge({}, DefaultServiceConfiguration, serviceConfiguration));
     }
 
     public rawDeltasKafka: LocalKafka;
@@ -161,7 +154,6 @@ export class LocalOrderer implements IOrderer {
         private readonly tenantManager: ITenantManager,
         private readonly gitManager: IGitManager | undefined,
         private readonly permission: any,
-        private readonly maxMessageSize: number,
         private readonly foremanTokenGenrator: TokenGenerator,
         private readonly pubSub: IPubSub,
         private readonly broadcasterContext: IContext,
@@ -169,9 +161,7 @@ export class LocalOrderer implements IOrderer {
         private readonly foremanContext: IContext,
         private readonly scribeContext: IContext,
         private readonly deliContext: IContext,
-        private readonly clientTimeout: number,
         private readonly serviceConfiguration: IServiceConfiguration,
-        private readonly scribeNackOnSummarizeException: boolean,
     ) {
         this.existing = details.existing;
         this.dbObject = this.getDeliState();
@@ -207,7 +197,6 @@ export class LocalOrderer implements IOrderer {
             this.documentId,
             clientId,
             client,
-            this.maxMessageSize,
             this.serviceConfiguration);
 
         // Document is now existing regardless of the original value
@@ -280,17 +269,16 @@ export class LocalOrderer implements IOrderer {
             async (lambdaSetup, context) => {
                 const documentCollection = await lambdaSetup.documentCollectionP();
                 const lastCheckpoint = JSON.parse(this.dbObject.deli);
+                const checkpointManager =
+                    createDeliCheckpointManagerFromCollection(this.tenantId, this.documentId, documentCollection);
                 return new DeliLambda(
                     context,
                     this.tenantId,
                     this.documentId,
                     lastCheckpoint,
-                    documentCollection,
+                    checkpointManager,
                     this.deltasKafka,
                     this.rawDeltasKafka,
-                    this.clientTimeout,
-                    ActivityCheckingTimeout,
-                    NoopConsolidationTimeout,
                     this.serviceConfiguration);
             });
     }
@@ -315,7 +303,6 @@ export class LocalOrderer implements IOrderer {
             : { members: [], proposals: [], values: [] };
 
         const protocolHandler = new ProtocolOpHandler(
-            this.documentId,
             scribe.minimumSequenceNumber,
             scribe.sequenceNumber,
             1, // TODO (Change when local orderer also ticks epoch)
@@ -342,6 +329,7 @@ export class LocalOrderer implements IOrderer {
             this.documentId,
             summaryWriter,
             summaryReader,
+            undefined,
             checkpointManager,
             scribe,
             this.serviceConfiguration,
@@ -349,10 +337,7 @@ export class LocalOrderer implements IOrderer {
             protocolHandler,
             1, // TODO (Change when local orderer also ticks epoch)
             protocolHead,
-            scribeMessages.map((message) => message.operation),
-            false,
-            false,
-            this.scribeNackOnSummarizeException);
+            scribeMessages.map((message) => message.operation));
     }
 
     private startLambdas() {

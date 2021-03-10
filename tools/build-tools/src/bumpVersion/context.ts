@@ -33,6 +33,7 @@ export class Context {
 
     constructor(
         public readonly gitRepo: GitRepo,
+        public readonly originRemotePartialUrl: string,
         public readonly originalBranchName: string
     ) {
         this.timer = new Timer(commonOptions.timer);
@@ -115,7 +116,8 @@ export class Context {
             for (const { name: dep, version, dev } of pkg.combinedDependencies) {
                 // Find the package in the repo
                 const depBuildPackage = this.fullPackageMap.get(dep);
-                if (depBuildPackage) {
+                // TODO: special casing tools to not be considered for release
+                if (depBuildPackage && depBuildPackage.group !== "tools") {
                     if (ReferenceVersionBag.checkPrivate(pkg, depBuildPackage, dev)) {
                         continue;
                     }

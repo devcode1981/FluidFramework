@@ -18,9 +18,16 @@ export interface IAsyncCache<TKey, TValue> {
     lock<T>(callback: () => Promise<T>): Promise<T>;
 }
 
-interface IResources {
-    tokens?: { [key: string]: IOdspTokens };
-    pushTokens?: IOdspTokens;
+export interface IResources {
+    tokens?: {
+        version?: number;
+        data: {
+            [key: string]: {
+                storage?: IOdspTokens,
+                push?: IOdspTokens
+            }
+        }
+    }
 }
 
 const getRCFileName = () => path.join(os.homedir(), ".fluidtoolrc");
@@ -50,5 +57,10 @@ export async function saveRC(rc: IResources) {
 // eslint-disable-next-line prefer-arrow/prefer-arrow-functions
 export async function lockRC() {
     // eslint-disable-next-line @typescript-eslint/no-unsafe-return
-    return lock(getRCFileName(), { realpath: false });
+    return lock(getRCFileName(), {
+        retries: {
+            forever: true,
+        },
+        realpath: false,
+    });
 }

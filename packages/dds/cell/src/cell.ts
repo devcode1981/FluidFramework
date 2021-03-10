@@ -3,8 +3,8 @@
  * Licensed under the MIT License.
  */
 
-import { assert , fromBase64ToUtf8 } from "@fluidframework/common-utils";
-import { ISerializedHandle } from "@fluidframework/core-interfaces";
+import { assert , bufferToString } from "@fluidframework/common-utils";
+import { IFluidSerializer, ISerializedHandle } from "@fluidframework/core-interfaces";
 
 import {
     FileMode,
@@ -163,7 +163,7 @@ export class SharedCell<T extends Serializable = any> extends SharedObject<IShar
         // Serialize the value if required.
         const operationValue: ICellValue = {
             type: ValueType[ValueType.Plain],
-            value: this.toSerializable(value),
+            value: this.toSerializable(value, this.serializer),
         };
 
         // Set the value locally.
@@ -211,11 +211,11 @@ export class SharedCell<T extends Serializable = any> extends SharedObject<IShar
      *
      * @returns the snapshot of the current state of the cell
      */
-    public snapshot(): ITree {
+    protected snapshotCore(serializer: IFluidSerializer): ITree {
         // Get a serializable form of data
         const content: ICellValue = {
             type: ValueType[ValueType.Plain],
-            value: this.toSerializable(this.data),
+            value: this.toSerializable(this.data, serializer),
         };
 
         // And then construct the tree for it
@@ -231,8 +231,6 @@ export class SharedCell<T extends Serializable = any> extends SharedObject<IShar
                     },
                 },
             ],
-            // eslint-disable-next-line no-null/no-null
-            id: null,
         };
 
         return tree;
@@ -242,10 +240,11 @@ export class SharedCell<T extends Serializable = any> extends SharedObject<IShar
      * {@inheritDoc @fluidframework/shared-object-base#SharedObject.loadCore}
      */
     protected async loadCore(storage: IChannelStorageService): Promise<void> {
-        const rawContent = await storage.read(snapshotFileName);
+        const blob = await storage.readBlob(snapshotFileName);
+        const rawContent = bufferToString(blob, "utf8");
 
         const content = rawContent !== undefined
-            ? JSON.parse(fromBase64ToUtf8(rawContent)) as ICellValue
+            ? JSON.parse(rawContent) as ICellValue
             : { type: ValueType[ValueType.Plain], value: undefined };
 
         this.data = this.fromSerializable(content);
@@ -324,16 +323,14 @@ export class SharedCell<T extends Serializable = any> extends SharedObject<IShar
         this.emit("delete");
     }
 
-    private toSerializable(value: T | undefined) {
+    private toSerializable(value: T | undefined, serializer: IFluidSerializer) {
         if (value === undefined) {
             return value;
         }
 
         // Stringify to convert to the serialized handle values - and then parse in order to create
         // a POJO for the op
-        const stringified = this.runtime.IFluidSerializer.stringify(
-            value,
-            this.handle);
+        const stringified = serializer.stringify(value, this.handle);
         // eslint-disable-next-line @typescript-eslint/no-unsafe-return
         return JSON.parse(stringified);
     }
@@ -352,7 +349,7 @@ export class SharedCell<T extends Serializable = any> extends SharedObject<IShar
 
         // eslint-disable-next-line @typescript-eslint/no-unsafe-return
         return value !== undefined
-            ? this.runtime.IFluidSerializer.parse(JSON.stringify(value))
+            ? this.serializer.parse(JSON.stringify(value))
             : value;
     }
 }

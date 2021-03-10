@@ -9,14 +9,13 @@ import {
     IFluidConfiguration,
     IRequest,
     IResponse,
-    IFluidCodeDetails,
 } from "@fluidframework/core-interfaces";
 import { IDocumentStorageService } from "@fluidframework/driver-definitions";
 import {
+    IClientConfiguration,
     IClientDetails,
     IQuorum,
     ISequencedDocumentMessage,
-    IServiceConfiguration,
     ISnapshotTree,
     ITree,
     MessageType,
@@ -27,7 +26,7 @@ import {
 import { IAudience } from "./audience";
 import { IDeltaManager } from "./deltas";
 import { ICriticalContainerError, ContainerWarning } from "./error";
-import { ILoader } from "./loader";
+import { ILoader, ILoaderOptions } from "./loader";
 
 // Represents the attachment state of the entity.
 export enum AttachState {
@@ -98,9 +97,6 @@ export interface IRuntime extends IDisposable {
      * @param attachState - State of the container.
      */
     setAttachState(attachState: AttachState.Attaching | AttachState.Attached): void;
-
-    // 0.24 back-compat attachingBeforeSummary
-    readonly runtimeVersion?: string;
 }
 
 /**
@@ -114,26 +110,22 @@ export interface IRuntime extends IDisposable {
 export interface IContainerContext extends IDisposable {
     readonly id: string;
     readonly existing: boolean | undefined;
-    readonly options: any;
+    readonly options: ILoaderOptions;
     readonly configuration: IFluidConfiguration;
     readonly clientId: string | undefined;
     readonly clientDetails: IClientDetails;
-    readonly codeDetails: IFluidCodeDetails;
-    readonly storage: IDocumentStorageService | undefined | null;
+    readonly storage: IDocumentStorageService | undefined;
     readonly connected: boolean;
-    readonly branch: string;
     readonly baseSnapshot: ISnapshotTree | undefined;
     readonly submitFn: (type: MessageType, contents: any, batch: boolean, appData?: any) => number;
     readonly submitSignalFn: (contents: any) => void;
-    readonly snapshotFn: (message: string) => Promise<void>;
     readonly closeFn: (error?: ICriticalContainerError) => void;
     readonly deltaManager: IDeltaManager<ISequencedDocumentMessage, IDocumentMessage>;
     readonly quorum: IQuorum;
     readonly audience: IAudience | undefined;
     readonly loader: ILoader;
     readonly logger: ITelemetryLogger;
-    readonly serviceConfiguration: IServiceConfiguration | undefined;
-    readonly version: string;
+    readonly serviceConfiguration: IClientConfiguration | undefined;
     readonly previousRuntimeState: IRuntimeState;
 
     /**
@@ -142,8 +134,6 @@ export interface IContainerContext extends IDisposable {
     readonly scope: IFluidObject;
 
     raiseContainerWarning(warning: ContainerWarning): void;
-    requestSnapshot(tagMessage: string): Promise<void>;
-    reloadContext(): Promise<void>;
 
     /**
      * Get an absolute url for a provided container-relative request.
@@ -160,7 +150,7 @@ export interface IContainerContext extends IDisposable {
 
     getLoadedFromVersion(): IVersion | undefined;
 
-    createSummary(): ISummaryTree;
+    updateDirtyContainerState(dirty: boolean): void;
 }
 
 export const IRuntimeFactory: keyof IProvideRuntimeFactory = "IRuntimeFactory";

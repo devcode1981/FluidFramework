@@ -9,6 +9,7 @@ import {
     ContainerWarning,
     IDeltaManager,
     ILoader,
+    ILoaderOptions,
 } from "@fluidframework/container-definitions";
 import {
     IRequest,
@@ -48,7 +49,7 @@ export interface IProvideContainerRuntime {
 export interface IContainerRuntimeEvents extends IContainerRuntimeBaseEvents{
     (event: "codeDetailsProposed", listener: (codeDetails: IFluidCodeDetails, proposal: IPendingProposal) => void);
     (
-        event: "dirtyDocument" | "disconnected" | "dispose" | "savedDocument",
+        event: "dirtyDocument" | "dirty" | "disconnected" | "dispose" | "savedDocument" | "saved",
         listener: () => void);
     (event: "connected", listener: (clientId: string) => void);
     (event: "localHelp", listener: (message: IHelpMessage) => void);
@@ -71,17 +72,15 @@ export interface IContainerRuntime extends
     IContainerRuntimeBaseWithCombinedEvents {
     readonly id: string;
     readonly existing: boolean;
-    readonly options: any;
+    readonly options: ILoaderOptions;
     readonly clientId: string | undefined;
     readonly clientDetails: IClientDetails;
     readonly connected: boolean;
     readonly leader: boolean;
     readonly deltaManager: IDeltaManager<ISequencedDocumentMessage, IDocumentMessage>;
     readonly storage: IDocumentStorageService;
-    readonly branch: string;
     readonly loader: ILoader;
     readonly flushMode: FlushMode;
-    readonly snapshotFn: (message: string) => Promise<void>;
     readonly scope: IFluidObject;
     /**
      * Indicates the attachment state of the container to a host service.
@@ -121,10 +120,15 @@ export interface IContainerRuntime extends
     raiseContainerWarning(warning: ContainerWarning): void;
 
     /**
+     * @deprecated - Please use isDirty()
+     */
+    isDocumentDirty(): boolean;
+
+    /**
      * Returns true of document is dirty, i.e. there are some pending local changes that
      * either were not sent out to delta stream or were not yet acknowledged.
      */
-    isDocumentDirty(): boolean;
+    readonly isDirty: boolean;
 
     /**
      * Flushes any ops currently being batched to the loader

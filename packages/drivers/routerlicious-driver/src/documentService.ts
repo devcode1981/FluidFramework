@@ -3,15 +3,18 @@
  * Licensed under the MIT License.
  */
 
+import assert from "assert";
 import * as api from "@fluidframework/driver-definitions";
 import { IClient, IErrorTrackingService } from "@fluidframework/protocol-definitions";
 import { GitManager, Historian, ICredentials, IGitCache } from "@fluidframework/server-services-client";
 import io from "socket.io-client";
+import { ITelemetryLogger } from "@fluidframework/common-definitions";
 import { DeltaStorageService, DocumentDeltaStorageService } from "./deltaStorageService";
 import { DocumentStorageService } from "./documentStorageService";
 import { R11sDocumentDeltaConnection } from "./documentDeltaConnection";
 import { NullBlobStorageService } from "./nullBlobStorageService";
 import { ITokenProvider } from "./tokens";
+import { RouterliciousStorageRestWrapper } from "./restWrapper";
 
 /**
  * The DocumentService manages the Socket.IO connection and manages routing requests to connected
@@ -28,11 +31,14 @@ export class DocumentService implements api.IDocumentService {
         private readonly historianApi: boolean,
         private readonly directCredentials: ICredentials | undefined,
         private readonly gitCache: IGitCache | undefined,
+        private readonly logger: ITelemetryLogger,
         protected tokenProvider: ITokenProvider,
         protected tenantId: string,
         protected documentId: string,
     ) {
     }
+
+    private documentStorageService: DocumentStorageService | undefined;
 
     /**
      * Connects to a storage endpoint for snapshot service.
@@ -44,24 +50,19 @@ export class DocumentService implements api.IDocumentService {
             return new NullBlobStorageService();
         }
 
-        const storageToken = await this.tokenProvider.fetchStorageToken();
-        // Craft credentials - either use the direct credentials (i.e. a GitHub user + PAT) - or make use of our
-        // tenant token
-        let credentials: ICredentials | undefined;
-        if (this.directCredentials) {
-            credentials = this.directCredentials;
-        } else {
-            credentials = {
-                password: storageToken.jwt,
-                user: this.tenantId,
-            };
-        }
-
+        const storageRestWrapper = await RouterliciousStorageRestWrapper.load(
+            this.tenantId,
+            this.documentId,
+            this.tokenProvider,
+            this.logger,
+            this.gitUrl,
+            this.directCredentials,
+        );
         const historian = new Historian(
             this.gitUrl,
             this.historianApi,
             this.disableCache,
-            credentials);
+            storageRestWrapper);
         const gitManager = new GitManager(historian);
 
         // Insert cached seed data
@@ -83,7 +84,8 @@ export class DocumentService implements api.IDocumentService {
             }
         }
 
-        return new DocumentStorageService(this.documentId, gitManager);
+        this.documentStorageService = new DocumentStorageService(this.documentId, gitManager);
+        return this.documentStorageService;
     }
 
     /**
@@ -92,8 +94,11 @@ export class DocumentService implements api.IDocumentService {
      * @returns returns the document delta storage service for routerlicious driver.
      */
     public async connectToDeltaStorage(): Promise<api.IDocumentDeltaStorageService> {
-        const deltaStorage = new DeltaStorageService(this.deltaStorageUrl, this.tokenProvider);
-        return new DocumentDeltaStorageService(this.tenantId, this.documentId, deltaStorage);
+        assert(this.documentStorageService, "Storage service not initialized");
+
+        const deltaStorage = new DeltaStorageService(this.deltaStorageUrl, this.tokenProvider, this.logger);
+        return new DocumentDeltaStorageService(this.tenantId, this.documentId,
+            deltaStorage, this.documentStorageService);
     }
 
     /**
@@ -102,14 +107,18 @@ export class DocumentService implements api.IDocumentService {
      * @returns returns the document delta stream service for routerlicious driver.
      */
     public async connectToDeltaStream(client: IClient): Promise<api.IDocumentDeltaConnection> {
-        const ordererToken = await this.tokenProvider.fetchOrdererToken();
+        const ordererToken = await this.tokenProvider.fetchOrdererToken(
+            this.tenantId,
+            this.documentId,
+        );
         return R11sDocumentDeltaConnection.create(
             this.tenantId,
             this.documentId,
             ordererToken.jwt,
             io,
             client,
-            this.ordererUrl);
+            this.ordererUrl,
+            this.logger);
     }
 
     public getErrorTrackingService() {

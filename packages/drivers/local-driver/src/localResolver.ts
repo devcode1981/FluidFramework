@@ -15,6 +15,16 @@ import {
 import { ScopeType } from "@fluidframework/protocol-definitions";
 import { generateToken } from "./auth";
 
+export function createLocalResolverCreateNewRequest(documentId: string): IRequest {
+    const createNewRequest: IRequest = {
+        url: `http://localhost:3000/${documentId}`,
+        headers: {
+            [DriverHeader.createNew]: true,
+        },
+    };
+    return createNewRequest;
+}
+
 /**
  * Resolves URLs by providing fake URLs which succeed with the other
  * related local classes.
@@ -33,7 +43,7 @@ export class LocalResolver implements IUrlResolver {
      */
     public async resolve(request: IRequest): Promise<IResolvedUrl> {
         const parsedUrl = new URL(request.url);
-        const fullPath = parsedUrl.pathname.substr(1);
+        const fullPath = `${parsedUrl.pathname.substr(1)}${parsedUrl.search}`;
         const documentId = fullPath.split("/")[0];
         const scopes = [ScopeType.DocRead, ScopeType.DocWrite, ScopeType.SummaryWrite];
         const resolved: IFluidResolvedUrl = {
@@ -68,12 +78,6 @@ export class LocalResolver implements IUrlResolver {
     }
 
     public createCreateNewRequest(documentId: string): IRequest {
-        const createNewRequest: IRequest = {
-            url: `http://localhost:3000/${documentId}`,
-            headers: {
-                [DriverHeader.createNew]: true,
-            },
-        };
-        return createNewRequest;
+        return createLocalResolverCreateNewRequest(documentId);
     }
 }

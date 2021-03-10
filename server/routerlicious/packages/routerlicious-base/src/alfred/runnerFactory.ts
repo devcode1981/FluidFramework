@@ -11,6 +11,7 @@ import {
     NodeManager,
     ReservationManager,
 } from "@fluidframework/server-memory-orderer";
+import { EventHubProducer } from "@fluidframework/server-services-ordering-eventhub";
 import * as services from "@fluidframework/server-services";
 import * as core from "@fluidframework/server-services-core";
 import * as utils from "@fluidframework/server-services-utils";
@@ -20,7 +21,6 @@ import * as redis from "redis";
 import * as winston from "winston";
 import * as ws from "ws";
 import { IAlfredTenant } from "@fluidframework/server-services-client";
-import { DefaultServiceConfiguration } from "@fluidframework/server-lambdas";
 import { AlfredRunner } from "./runner";
 
 class NodeWebSocketServer implements core.IWebSocketServer {
@@ -56,7 +56,7 @@ export class OrdererManager implements core.IOrdererManager {
         winston.info(`tenant orderer: ${JSON.stringify(tenant.orderer)}`, { messageMetaData });
 
         if (tenant.orderer.url !== this.ordererUrl) {
-            return Promise.reject("Invalid ordering service endpoint");
+            return Promise.reject(new Error("Invalid ordering service endpoint"));
         }
 
         switch (tenant.orderer.type) {
@@ -81,13 +81,17 @@ export class AlfredResources implements utils.IResources {
         public webSocketLibrary: string,
         public orderManager: core.IOrdererManager,
         public tenantManager: core.ITenantManager,
+        public restThrottler: core.IThrottler,
+        public socketConnectThrottler: core.IThrottler,
+        public socketSubmitOpThrottler: core.IThrottler,
         public storage: core.IDocumentStorage,
         public appTenants: IAlfredTenant[],
         public mongoManager: core.MongoManager,
         public port: any,
         public documentsCollectionName: string,
         public metricClientConfig: any) {
-        this.webServerFactory = new services.SocketIoWebServerFactory(this.redisConfig);
+        const socketIoAdapterConfig = config.get("alfred:socketIoAdapter");
+        this.webServerFactory = new services.SocketIoWebServerFactory(this.redisConfig, socketIoAdapterConfig);
     }
 
     public async dispose(): Promise<void> {
@@ -105,16 +109,23 @@ export class AlfredResourcesFactory implements utils.IResourcesFactory<AlfredRes
         const kafkaClientId = config.get("alfred:kafkaClientId");
         const topic = config.get("alfred:topic");
         const metricClientConfig = config.get("metric");
-        const maxKafkaMessageSize = bytes.parse(config.get("kafka:maxMessageSize"));
         const kafkaProducerPollIntervalMs = config.get("kafka:lib:producerPollIntervalMs");
+        const kafkaNumberOfPartitions = config.get("kafka:lib:numberOfPartitions");
+        const kafkaReplicationFactor = config.get("kafka:lib:replicationFactor");
         const producer = services.createProducer(
             kafkaLibrary,
             kafkaEndpoint,
             kafkaClientId,
             topic,
-            maxKafkaMessageSize,
             false,
-            kafkaProducerPollIntervalMs);
+            kafkaProducerPollIntervalMs,
+            kafkaNumberOfPartitions,
+            kafkaReplicationFactor);
+
+        producer.on("error", (error) => {
+            winston.error(error);
+        });
+
         const redisConfig = config.get("redis");
         const webSocketLibrary = config.get("alfred:webSocketLib");
         const authEndpoint = config.get("auth:endpoint");
@@ -167,6 +178,78 @@ export class AlfredResourcesFactory implements utils.IResourcesFactory<AlfredRes
 
         const tenantManager = new services.TenantManager(authEndpoint);
 
+        // Redis connection for throttling.
+        const redisConfigForThrottling = config.get("redisForThrottling");
+        const redisOptionsForThrottling: redis.ClientOpts = { password: redisConfigForThrottling.pass };
+        if (redisConfigForThrottling.tls) {
+            redisOptionsForThrottling.tls = {
+                serverName: redisConfigForThrottling.host,
+            };
+        }
+        const redisClientForThrottling = redis.createClient(
+            redisConfigForThrottling.port,
+            redisConfigForThrottling.host,
+            redisOptionsForThrottling);
+
+        // Rest API Throttler
+        const throttleMaxRequestsPerMs =
+            config.get("alfred:throttling:restCalls:maxPerMs") as number | undefined;
+        const throttleMaxRequestBurst =
+            config.get("alfred:throttling:restCalls:maxBurst") as number | undefined;
+        const throttleMinRequestCooldownIntervalInMs =
+            config.get("alfred:throttling:restCalls:minCooldownIntervalInMs") as number | undefined;
+        const throttleMinRequestThrottleIntervalInMs =
+            config.get("alfred:throttling:restCalls:minThrottleIntervalInMs") as number | undefined;
+        const throttleStorageManager = new services.RedisThrottleStorageManager(redisClientForThrottling);
+        const restThrottlerHelper = new services.ThrottlerHelper(
+            throttleStorageManager,
+            throttleMaxRequestsPerMs,
+            throttleMaxRequestBurst,
+            throttleMinRequestCooldownIntervalInMs);
+        const restThrottler = new services.Throttler(
+            restThrottlerHelper,
+            throttleMinRequestThrottleIntervalInMs,
+            winston);
+
+        // Socket Connection Throttler
+        const throttleMaxSocketConnectionsPerMs =
+            config.get("alfred:throttling:socketConnections:maxPerMs") as number | undefined;
+        const throttleMaxSocketConnectionBurst =
+            config.get("alfred:throttling:socketConnections:maxBurst") as number | undefined;
+        const throttleMinSocketConnectionCooldownIntervalInMs =
+            config.get("alfred:throttling:socketConnections:minCooldownIntervalInMs") as number | undefined;
+        const throttleMinSocketConnectionThrottleIntervalInMs =
+            config.get("alfred:throttling:socketConnections:minThrottleIntervalInMs") as number | undefined;
+        const socketConnectThrottlerHelper = new services.ThrottlerHelper(
+            throttleStorageManager,
+            throttleMaxSocketConnectionsPerMs,
+            throttleMaxSocketConnectionBurst,
+            throttleMinSocketConnectionCooldownIntervalInMs,
+        );
+        const socketConnectThrottler = new services.Throttler(
+            socketConnectThrottlerHelper,
+            throttleMinSocketConnectionThrottleIntervalInMs,
+            winston);
+
+        // Socket SubmitOp Throttler
+        const throttleMaxSubmitOpsPerMs =
+            config.get("alfred:throttling:submitOps:maxPerMs") as number | undefined;
+        const throttleMaxSubmitOpBurst =
+            config.get("alfred:throttling:submitOps:maxBurst") as number | undefined;
+        const throttleMinSubmitOpCooldownIntervalInMs =
+            config.get("alfred:throttling:submitOps:minCooldownIntervalInMs") as number | undefined;
+        const throttleMinSubmitOpThrottleIntervalInMs =
+            config.get("alfred:throttling:submitOps:minThrottleIntervalInMs") as number | undefined;
+        const socketSubmitOpThrottlerHelper = new services.ThrottlerHelper(
+            throttleStorageManager,
+            throttleMaxSubmitOpsPerMs,
+            throttleMaxSubmitOpBurst,
+            throttleMinSubmitOpCooldownIntervalInMs);
+        const socketSubmitOpThrottler = new services.Throttler(
+            socketSubmitOpThrottlerHelper,
+            throttleMinSubmitOpThrottleIntervalInMs,
+            winston);
+
         const databaseManager = new core.MongoDatabaseManager(
             mongoManager,
             nodeCollectionName,
@@ -196,16 +279,16 @@ export class AlfredResourcesFactory implements utils.IResourcesFactory<AlfredRes
         const kafkaOrdererFactory = new KafkaOrdererFactory(
             producer,
             maxSendMessageSize,
-            DefaultServiceConfiguration);
+            core.DefaultServiceConfiguration);
         const serverUrl = config.get("worker:serverUrl");
 
         let eventHubOrdererFactory: KafkaOrdererFactory = null;
         if (config.get("eventHub")) {
-            const eventHubProducer = new services.EventHubProducer(config.get("eventHub:endpoint"), topic);
+            const eventHubProducer = new EventHubProducer(config.get("eventHub:endpoint"), topic);
             eventHubOrdererFactory = new KafkaOrdererFactory(
                 eventHubProducer,
                 maxSendMessageSize,
-                DefaultServiceConfiguration);
+                core.DefaultServiceConfiguration);
         }
 
         const orderManager = new OrdererManager(
@@ -229,6 +312,9 @@ export class AlfredResourcesFactory implements utils.IResourcesFactory<AlfredRes
             webSocketLibrary,
             orderManager,
             tenantManager,
+            restThrottler,
+            socketConnectThrottler,
+            socketSubmitOpThrottler,
             storage,
             appTenants,
             mongoManager,
@@ -246,6 +332,9 @@ export class AlfredRunnerFactory implements utils.IRunnerFactory<AlfredResources
             resources.port,
             resources.orderManager,
             resources.tenantManager,
+            resources.restThrottler,
+            resources.socketConnectThrottler,
+            resources.socketSubmitOpThrottler,
             resources.storage,
             resources.clientManager,
             resources.appTenants,

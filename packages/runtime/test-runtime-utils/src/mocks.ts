@@ -4,9 +4,9 @@
  */
 
 import { EventEmitter } from "events";
-import { assert ,
-    Deferred,
-    fromUtf8ToBase64,
+import {
+    assert,
+    stringToBuffer,
 } from "@fluidframework/common-utils";
 import { ITelemetryLogger } from "@fluidframework/common-definitions";
 import {
@@ -20,19 +20,18 @@ import {
     ContainerWarning,
     ILoader,
     AttachState,
+    ILoaderOptions,
 } from "@fluidframework/container-definitions";
 
 import { DebugLogger } from "@fluidframework/telemetry-utils";
 import {
-    IBlob,
     ICommittedProposal,
     IQuorum,
     ISequencedClient,
     ISequencedDocumentMessage,
-    ITree,
+    ISummaryTree,
     ITreeEntry,
     MessageType,
-    TreeEntry,
     SummaryType,
 } from "@fluidframework/protocol-definitions";
 import {
@@ -44,7 +43,11 @@ import {
     IChannelServices,
 } from "@fluidframework/datastore-definitions";
 import { FluidSerializer, getNormalizedObjectStoragePathParts, mergeStats } from "@fluidframework/runtime-utils";
-import { IFluidDataStoreChannel, ISummaryTreeWithStats } from "@fluidframework/runtime-definitions";
+import {
+    IChannelSummarizeResult,
+    IFluidDataStoreChannel,
+    IGarbageCollectionData,
+} from "@fluidframework/runtime-definitions";
 import { v4 as uuid } from "uuid";
 import { MockDeltaManager } from "./mockDeltas";
 
@@ -375,7 +378,7 @@ export class MockFluidDataStoreRuntime extends EventEmitter
     public readonly documentId: string;
     public readonly id: string = uuid();
     public readonly existing: boolean;
-    public options: any = {};
+    public options: ILoaderOptions = {};
     public clientId: string | undefined = uuid();
     public readonly path = "";
     public readonly connected = true;
@@ -383,7 +386,6 @@ export class MockFluidDataStoreRuntime extends EventEmitter
     public deltaManager = new MockDeltaManager();
     public readonly loader: ILoader;
     public readonly logger: ITelemetryLogger = DebugLogger.create("fluid:MockFluidDataStoreRuntime");
-    private readonly activeDeferred = new Deferred<void>();
     public readonly quorum = new MockQuorum();
 
     public get absolutePath() {
@@ -406,10 +408,6 @@ export class MockFluidDataStoreRuntime extends EventEmitter
 
     public dispose(): void {
         this._disposed = true;
-    }
-
-    public get active(): Promise<void> {
-        return this.activeDeferred.promise;
     }
 
     public async getChannel(id: string): Promise<IChannel> {
@@ -499,7 +497,7 @@ export class MockFluidDataStoreRuntime extends EventEmitter
         return null;
     }
 
-    public async summarize(fullTree?: boolean, trackState?: boolean): Promise<ISummaryTreeWithStats> {
+    public async summarize(fullTree?: boolean, trackState?: boolean): Promise<IChannelSummarizeResult> {
         const stats = mergeStats();
         stats.treeNodeCount++;
         return {
@@ -508,14 +506,25 @@ export class MockFluidDataStoreRuntime extends EventEmitter
                 tree: {},
             },
             stats,
+            gcData: {
+                gcNodes: {},
+            },
         };
     }
+
+    public async getGCData(): Promise<IGarbageCollectionData> {
+        return {
+            gcNodes: {},
+        };
+    }
+
+    public updateUsedRoutes(usedRoutes: string[]) {}
 
     public getAttachSnapshot(): ITreeEntry[] {
         return [];
     }
 
-    public getAttachSummary(): ISummaryTreeWithStats {
+    public getAttachSummary(): IChannelSummarizeResult {
         const stats = mergeStats();
         stats.treeNodeCount++;
         return {
@@ -524,6 +533,9 @@ export class MockFluidDataStoreRuntime extends EventEmitter
                 tree: {},
             },
             stats,
+            gcData: {
+                gcNodes: {},
+            },
         };
     }
 
@@ -569,11 +581,9 @@ export class MockEmptyDeltaConnection implements IDeltaConnection {
 export class MockObjectStorageService implements IChannelStorageService {
     public constructor(private readonly contents: { [key: string]: string }) {
     }
-    public async read(path: string): Promise<string> {
-        const content = this.contents[path];
-        // Do we have such blob?
-        assert(content !== undefined);
-        return fromUtf8ToBase64(content);
+
+    public async readBlob(path: string): Promise<ArrayBufferLike> {
+        return stringToBuffer(this.contents[path], "utf8");
     }
 
     public async contains(path: string): Promise<boolean> {
@@ -592,11 +602,11 @@ export class MockObjectStorageService implements IChannelStorageService {
  * Mock implementation of IChannelServices
  */
 export class MockSharedObjectServices implements IChannelServices {
-    public static createFromTree(tree: ITree) {
+    public static createFromSummary(summaryTree: ISummaryTree) {
         const contents: { [key: string]: string } = {};
-        for (const entry of tree.entries) {
-            assert(entry.type === TreeEntry.Blob);
-            contents[entry.path] = (entry.value as IBlob).contents;
+        for (const [key, value] of Object.entries(summaryTree.tree)) {
+            assert(value.type === SummaryType.Blob);
+            contents[key] = value.content as string;
         }
         return new MockSharedObjectServices(contents);
     }

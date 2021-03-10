@@ -9,7 +9,7 @@ localhost. We've already embedded an instance of the application, with two clien
 button in either client to see how the state of the dice is shared between the two clients.
 
 {{< fluid_bundle_loader idPrefix="dice-roller"
-bundleName="dice-roller.9af6bdd702e6cd4ad6cf.js" >}}
+bundleName="dice-roller.12142020.js" >}}
 
 ## Set up your development environment
 
@@ -21,25 +21,6 @@ To get started you need the following installed.
 We also recommend that you install the following:
 
 - [Git](https://git-scm.com/downloads)
-
-### Installing Fluid Packages
-
-For this example we already have the necessary Fluid packages in our package.json. Therefore, when you run `npm
-install`, they will be installed for you. However, if you wanted to start a new project on your own, available packages
-are labeled in the [Fluid API Section](https://fluidframework.com/apis/) of the documentation.
-
-To install your packages you can follow this format: `npm i package-name` if you use [npm](https://docs.npmjs.com/) or
-`yarn add package-name` if you use [yarn](https://yarnpkg.com/).
-
-We use the following Fluid packages in this tutorial:
-
-- **@fluidframework/aqueduct**
-- **@fluidframework/get-tinylicious-container**
-- **@fluidframework/map**
-- **tinylicious**
-  - Note: Tinylicious is only a development dependency, since it is the
-    [service]({{< relref "/docs/concepts/service.md" >}}) used when developing your Fluid app. You can install it as
-    a development dependency using `npm i tinylicious --save-dev` or `yarn add tinylicious --dev`.
 
 ## Getting Started
 
@@ -84,4 +65,20 @@ that the state of the dice changes in both clients.
 
 ## Next Steps
 
-See the code for the dice roller app in the [tutorial](./tutorial.md).
+Start learning how to work with the Fluid Framework APIs with our [tutorial](./tutorial.md).
+
+Or, if you would like to start a new Fluid project from scratch, the available packages
+are labeled in the [Fluid API Section](https://fluidframework.com/apis/) of the documentation.
+
+To install your packages you can follow this format: `npm i package-name` if you use [npm](https://docs.npmjs.com/) or
+`yarn add package-name` if you use [yarn](https://yarnpkg.com/).
+
+We use the following Fluid packages in this quickstart:
+
+- **@fluidframework/aqueduct**
+- **@fluid-experimental/get-container**
+- **@fluidframework/map**
+- **tinylicious**
+  - Note: Tinylicious is only a development dependency, since it is the
+    [service]({{< relref "/docs/concepts/service.md" >}}) used when developing your Fluid app. You can install it as
+    a development dependency using `npm i tinylicious --save-dev` or `yarn add tinylicious --dev`.

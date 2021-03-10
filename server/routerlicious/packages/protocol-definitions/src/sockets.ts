@@ -4,7 +4,7 @@
  */
 
 import { ConnectionMode, IClient, ISignalClient } from "./clients";
-import { IServiceConfiguration } from "./config";
+import { IClientConfiguration } from "./config";
 import { ISequencedDocumentMessage, ISignalMessage } from "./protocol";
 import { ITokenClaims } from "./tokens";
 
@@ -46,6 +46,12 @@ export interface IConnect {
      * An optional nonce used during connection to identify connection attempts
      */
     nonce?: string;
+
+    /**
+     * Represents the version of document at client. It should match the version on server
+     * for connection to be successful.
+     */
+    epoch?: string;
 }
 
 /**
@@ -71,12 +77,6 @@ export interface IConnected {
      * Maximum size of a message before chunking is required
      */
     maxMessageSize: number;
-
-    // Back-compat, removal tracked with issue #4346
-    /**
-     * The parent branch for the document
-     */
-    parentBranch: null;
 
     /**
      * Messages sent during the connection
@@ -106,7 +106,7 @@ export interface IConnected {
     /**
      * Configuration details provided by the service
      */
-    serviceConfiguration: IServiceConfiguration;
+    serviceConfiguration: IClientConfiguration;
 
     /**
      * Connection mode of client.
@@ -126,4 +126,9 @@ export interface IConnected {
      * that is likely to be more up-to-date.
      */
     checkpointSequenceNumber?: number;
+
+    /**
+     * Represents the version of document at server.
+     */
+    epoch?: string;
 }

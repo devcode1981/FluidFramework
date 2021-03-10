@@ -5,10 +5,10 @@
 
 import { EventEmitter } from "events";
 import {
+    IClientConfiguration,
     IClientDetails,
     IDocumentMessage,
     ISequencedDocumentMessage,
-    IServiceConfiguration,
     ISignalMessage,
     MessageType,
 } from "@fluidframework/protocol-definitions";
@@ -16,6 +16,7 @@ import {
 import {
     IDeltaManager,
     IDeltaQueue,
+    ReadOnlyInfo,
 } from "@fluidframework/container-definitions";
 
 /**
@@ -50,14 +51,6 @@ class MockDeltaQueue<T> extends EventEmitter implements IDeltaQueue<T> {
         return [];
     }
 
-    public async systemPause(): Promise<void> {
-        return;
-    }
-
-    public systemResume(): void {
-        return undefined;
-    }
-
     public dispose() { }
 
     constructor() {
@@ -73,6 +66,7 @@ export class MockDeltaManager extends EventEmitter
     public get disposed() { return undefined; }
 
     public readonly readonly = false;
+    public readOnlyInfo: ReadOnlyInfo = { readonly: false };
     public readonly clientType: string;
     public readonly clientDetails: IClientDetails;
     public get IDeltaSender() { return this; }
@@ -109,7 +103,7 @@ export class MockDeltaManager extends EventEmitter
         return 0;
     }
 
-    public get serviceConfiguration(): IServiceConfiguration {
+    public get serviceConfiguration(): IClientConfiguration {
         return undefined;
     }
 

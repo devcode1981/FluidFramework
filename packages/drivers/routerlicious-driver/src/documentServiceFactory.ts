@@ -18,11 +18,12 @@ import {
     getDocAttributesFromProtocolSummary,
     getQuorumValuesFromProtocolSummary,
 } from "@fluidframework/driver-utils";
-import Axios from "axios";
+import { ChildLogger } from "@fluidframework/telemetry-utils";
 import { DocumentService } from "./documentService";
 import { DocumentService2 } from "./documentService2";
 import { DefaultErrorTracking } from "./errorTracking";
 import { ITokenProvider } from "./tokens";
+import { RouterliciousOrdererRestWrapper } from "./restWrapper";
 
 /**
  * Factory for creating the routerlicious document service. Use this if you want to
@@ -60,14 +61,25 @@ export class RouterliciousDocumentServiceFactory implements IDocumentServiceFact
         }
         const documentAttributes = getDocAttributesFromProtocolSummary(protocolSummary);
         const quorumValues = getQuorumValuesFromProtocolSummary(protocolSummary);
-        await Axios.post(
-            `${resolvedUrl.endpoints.ordererUrl}/documents/${tenantId}`,
+
+        const logger2 = ChildLogger.create(logger, "RouterliciousDriver");
+        const ordererRestWrapper = await RouterliciousOrdererRestWrapper.load(
+            tenantId,
+            id,
+            this.tokenProvider,
+            logger2,
+            resolvedUrl.endpoints.ordererUrl,
+        );
+        await ordererRestWrapper.post(
+            `/documents/${tenantId}`,
             {
                 id,
                 summary: appSummary,
                 sequenceNumber: documentAttributes.sequenceNumber,
                 values: quorumValues,
-            });
+            },
+        );
+
         return this.createDocumentService(resolvedUrl, logger);
     }
 
@@ -99,6 +111,8 @@ export class RouterliciousDocumentServiceFactory implements IDocumentServiceFact
                 `Couldn't parse documentId and/or tenantId. [documentId:${documentId}][tenantId:${tenantId}]`);
         }
 
+        const logger2 = ChildLogger.create(logger, "RouterliciousDriver");
+
         if (this.useDocumentService2) {
             return new DocumentService2(
                 fluidResolvedUrl,
@@ -109,6 +123,7 @@ export class RouterliciousDocumentServiceFactory implements IDocumentServiceFact
                 this.disableCache,
                 this.historianApi,
                 this.credentials,
+                logger2,
                 this.tokenProvider,
                 tenantId,
                 documentId);
@@ -123,6 +138,7 @@ export class RouterliciousDocumentServiceFactory implements IDocumentServiceFact
                 this.historianApi,
                 this.credentials,
                 this.gitCache,
+                logger2,
                 this.tokenProvider,
                 tenantId,
                 documentId);

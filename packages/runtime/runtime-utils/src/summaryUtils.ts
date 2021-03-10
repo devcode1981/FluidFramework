@@ -16,10 +16,8 @@ import {
     SummaryType,
     ISummaryTree,
     SummaryObject,
-    IBlob,
     ISummaryBlob,
     TreeEntry,
-    IAttachment,
     ITreeEntry,
     ISnapshotTree,
 } from "@fluidframework/protocol-definitions";
@@ -92,6 +90,11 @@ export function addBlobToSummary(summary: ISummaryTreeWithStats, key: string, co
     summary.stats.totalBlobSize += getBlobSize(content);
 }
 
+export function addTreeToSummary(summary: ISummaryTreeWithStats, key: string, summarizeResult: ISummarizeResult): void {
+    summary.summary.tree[key] = summarizeResult.summary;
+    summary.stats = mergeStats(summary.stats, summarizeResult.stats);
+}
+
 export class SummaryTreeBuilder implements ISummaryTreeWithStats {
     private attachmentCounter: number = 0;
 
@@ -125,7 +128,11 @@ export class SummaryTreeBuilder implements ISummaryTreeWithStats {
         }, key, content);
     }
 
-    public addHandle(key: string, handleType: SummaryType, handle: string): void {
+    public addHandle(
+        key: string,
+        handleType: SummaryType.Tree | SummaryType.Blob | SummaryType.Attachment,
+        handle: string): void
+    {
         this.summaryTree[key] = {
             type: SummaryType.Handle,
             handleType,
@@ -153,6 +160,57 @@ export class SummaryTreeBuilder implements ISummaryTreeWithStats {
  * @param snapshot - snapshot in ITree format
  * @param fullTree - true to never use handles, even if id is specified
  */
+export function convertToSummaryTreeWithStats(
+    snapshot: ITree,
+    fullTree: boolean = false,
+): ISummaryTreeWithStats {
+    const builder = new SummaryTreeBuilder();
+    for (const entry of snapshot.entries) {
+        switch (entry.type) {
+            case TreeEntry.Blob: {
+                const blob = entry.value;
+                let content: string | Uint8Array;
+                if (blob.encoding === "base64") {
+                    content = IsoBuffer.from(blob.contents, "base64");
+                } else {
+                    content = blob.contents;
+                }
+                builder.addBlob(entry.path, content);
+                break;
+            }
+
+            case TreeEntry.Tree: {
+                const subtree = convertToSummaryTree(
+                    entry.value,
+                    fullTree);
+                builder.addWithStats(entry.path, subtree);
+
+                break;
+            }
+
+            case TreeEntry.Attachment: {
+                const id = entry.value.id;
+                builder.addAttachment(id);
+
+                break;
+            }
+
+            case TreeEntry.Commit:
+                throw new Error("Should not have Commit TreeEntry in summary");
+
+            default:
+                throw new Error("Unexpected TreeEntry type");
+        }
+    }
+
+    return builder.getSummaryTree();
+}
+
+/**
+ * Converts snapshot ITree to ISummaryTree format and tracks stats.
+ * @param snapshot - snapshot in ITree format
+ * @param fullTree - true to never use handles, even if id is specified
+ */
 export function convertToSummaryTree(
     snapshot: ITree,
     fullTree: boolean = false,
@@ -170,46 +228,7 @@ export function convertToSummaryTree(
             stats,
         };
     } else {
-        const builder = new SummaryTreeBuilder();
-        for (const entry of snapshot.entries) {
-            switch (entry.type) {
-                case TreeEntry.Blob: {
-                    const blob = entry.value as IBlob;
-                    let content: string | Uint8Array;
-                    if (blob.encoding === "base64") {
-                        content = IsoBuffer.from(blob.contents, "base64");
-                    } else {
-                        content = blob.contents;
-                    }
-                    builder.addBlob(entry.path, content);
-                    break;
-                }
-
-                case TreeEntry.Tree: {
-                    const subtree = convertToSummaryTree(
-                        entry.value as ITree,
-                        fullTree);
-                    builder.addWithStats(entry.path, subtree);
-
-                    break;
-                }
-
-                case TreeEntry.Attachment: {
-                    const id = (entry.value as IAttachment).id;
-                    builder.addAttachment(id);
-
-                    break;
-                }
-
-                case TreeEntry.Commit:
-                    throw new Error("Should not have Commit TreeEntry in summary");
-
-                default:
-                    throw new Error("Unexpected TreeEntry type");
-            }
-        }
-
-        return builder.getSummaryTree();
+        return convertToSummaryTreeWithStats(snapshot, fullTree);
     }
 }
 
@@ -238,6 +257,32 @@ export function convertSnapshotTreeToSummaryTree(
         builder.addWithStats(key, subtree);
     }
     return builder.getSummaryTree();
+}
+
+/**
+ * Utility to convert serialized snapshot taken in detached container to format where we can use it to
+ * attach the container.
+ * @param serializedSnapshotTree - serialized snapshot tree to be converted to summary tree for attach.
+ */
+export function convertContainerToDriverSerializedFormat(
+    serializedSnapshotTree: string,
+): ISummaryTree {
+    const snapshotTree: ISnapshotTree = JSON.parse(serializedSnapshotTree);
+    const summaryTree = convertSnapshotTreeToSummaryTree(snapshotTree).summary;
+    const appSummaryTree: ISummaryTree = {
+        type: SummaryType.Tree,
+        tree: {},
+    };
+    const entries = Object.entries(summaryTree.tree);
+    for (const [key, subTree] of entries) {
+        if (key !== ".protocol") {
+            appSummaryTree.tree[key] = subTree;
+            // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+            delete summaryTree.tree[key];
+        }
+    }
+    summaryTree.tree[".app"] = appSummaryTree;
+    return summaryTree;
 }
 
 /**
@@ -271,10 +316,6 @@ export function convertSummaryTreeToITree(summaryTree: ISummaryTree): ITree {
                 break;
             }
 
-            case SummaryType.Commit: {
-                throw new Error("Should not have Commit type in summary tree");
-            }
-
             case SummaryType.Handle: {
                 throw new Error("Should not have Handle type in summary tree");
             }
@@ -285,7 +326,5 @@ export function convertSummaryTreeToITree(summaryTree: ISummaryTree): ITree {
     }
     return {
         entries,
-        // eslint-disable-next-line no-null/no-null
-        id: null,
     };
 }

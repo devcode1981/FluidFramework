@@ -19,11 +19,9 @@ export interface ISummaryConfiguration {
 }
 
 /**
- * Key value store of service configuration properties provided as part of connection
+ * Key value store of service configuration properties provided to the client as part of connection
  */
-export interface IServiceConfiguration {
-    [key: string]: any;
-
+export interface IClientConfiguration {
     // Max message size the server will accept before requiring chunking
     maxMessageSize: number;
 
@@ -32,7 +30,4 @@ export interface IServiceConfiguration {
 
     // Summary algorithm configuration. This is sent to clients when they connect
     summary: ISummaryConfiguration;
-
-    // Enable adding a traces array to operation messages
-    enableTraces: boolean;
 }

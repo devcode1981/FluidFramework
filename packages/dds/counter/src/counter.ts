@@ -3,7 +3,8 @@
  * Licensed under the MIT License.
  */
 
-import { fromBase64ToUtf8 } from "@fluidframework/common-utils";
+import { bufferToString } from "@fluidframework/common-utils";
+import { IFluidSerializer } from "@fluidframework/core-interfaces";
 import {
     FileMode,
     ISequencedDocumentMessage,
@@ -128,7 +129,7 @@ export class SharedCounter extends SharedObject<ISharedCounterEvents> implements
      *
      * @returns the snapshot of the current state of the counter
      */
-    public snapshot(): ITree {
+    protected snapshotCore(serializer: IFluidSerializer): ITree {
         // Get a serializable form of data
         const content: ICounterSnapshotFormat = {
             value: this.value,
@@ -147,8 +148,6 @@ export class SharedCounter extends SharedObject<ISharedCounterEvents> implements
                     },
                 },
             ],
-            // eslint-disable-next-line no-null/no-null
-            id: null,
         };
 
         return tree;
@@ -158,10 +157,11 @@ export class SharedCounter extends SharedObject<ISharedCounterEvents> implements
      * {@inheritDoc @fluidframework/shared-object-base#SharedObject.loadCore}
      */
     protected async loadCore(storage: IChannelStorageService): Promise<void> {
-        const rawContent = await storage.read(snapshotFileName);
+        const blob = await storage.readBlob(snapshotFileName);
+        const rawContent = bufferToString(blob, "utf8");
 
         const content = rawContent !== undefined
-            ? JSON.parse(fromBase64ToUtf8(rawContent)) as ICounterSnapshotFormat
+            ? JSON.parse(rawContent) as ICounterSnapshotFormat
             : { value: 0 };
 
         this._value = content.value;

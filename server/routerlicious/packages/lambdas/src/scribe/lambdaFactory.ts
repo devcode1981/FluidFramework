@@ -15,10 +15,10 @@ import {
     IProducer,
     IScribe,
     ISequencedOperationMessage,
+    IServiceConfiguration,
     ITenantManager,
     MongoManager,
 } from "@fluidframework/server-services-core";
-import { IServiceConfiguration } from "@fluidframework/protocol-definitions";
 import { Provider } from "nconf";
 import { NoOpLambda } from "../utils";
 import { CheckpointManager } from "./checkpointManager";
@@ -72,7 +72,7 @@ export class ScribeLambdaFactory extends EventEmitter implements IPartitionLambd
         };
         // If the document doesn't exist then we trivially accept every message
         if (!document) {
-            context.log.info(`Creating NoOpLambda due to missing`, { messageMetaData });
+            context.log?.info(`Creating NoOpLambda due to missing`, { messageMetaData });
             return new NoOpLambda(context);
         }
 
@@ -85,13 +85,13 @@ export class ScribeLambdaFactory extends EventEmitter implements IPartitionLambd
         // Restore scribe state if not present in the cache. Mongodb casts undefined as null so we are checking
         // both to be safe. Empty sring denotes a cache that was cleared due to a service summary
         if (document.scribe === undefined || document.scribe === null) {
-            context.log.info(`New document. Setting empty scribe checkpoint`, { messageMetaData });
+            context.log?.info(`New document. Setting empty scribe checkpoint`, { messageMetaData });
             lastCheckpoint = DefaultScribe;
             opMessages = [];
         } else if (document.scribe === "") {
-            context.log.info(`Existing document. Fetching checkpoint from summary`, { messageMetaData });
+            context.log?.info(`Existing document. Fetching checkpoint from summary`, { messageMetaData });
             if (!latestSummary.fromSummary) {
-                context.log.error(`Summary can't be fetched`, { messageMetaData });
+                context.log?.error(`Summary can't be fetched`, { messageMetaData });
                 lastCheckpoint = DefaultScribe;
                 opMessages = [];
             } else {
@@ -102,16 +102,13 @@ export class ScribeLambdaFactory extends EventEmitter implements IPartitionLambd
                 // is okay. Conceptually this is similar to default checkpoint where logOffset is -1. In this case,
                 // the sequence number is 'n' rather than '0'.
                 lastCheckpoint.logOffset = -1;
-                context.log.info(JSON.stringify(lastCheckpoint));
+                context.log?.info(JSON.stringify(lastCheckpoint));
             }
         } else {
             lastCheckpoint = JSON.parse(document.scribe);
         }
 
-        const protocolHandler = initializeProtocol(
-            document.documentId,
-            lastCheckpoint.protocolState,
-            latestSummary.term);
+        const protocolHandler = initializeProtocol(lastCheckpoint.protocolState, latestSummary.term);
 
         const summaryWriter = new SummaryWriter(tenantId, documentId, gitManager, this.messageCollection);
         const checkpointManager = new CheckpointManager(
@@ -126,6 +123,7 @@ export class ScribeLambdaFactory extends EventEmitter implements IPartitionLambd
             document.documentId,
             summaryWriter,
             summaryReader,
+            undefined,
             checkpointManager,
             lastCheckpoint,
             this.serviceConfiguration,
@@ -133,9 +131,7 @@ export class ScribeLambdaFactory extends EventEmitter implements IPartitionLambd
             protocolHandler,
             latestSummary.term,
             latestSummary.protocolHead,
-            opMessages,
-            true,
-            false);
+            opMessages);
     }
 
     public async dispose(): Promise<void> {

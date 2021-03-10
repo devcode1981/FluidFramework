@@ -3,7 +3,6 @@
  * Licensed under the MIT License.
  */
 
-
 import { strict as assert } from "assert";
 import { Context, VersionChangeType } from "./context";
 import { getRepoStateChange } from "./versionBag";
@@ -12,12 +11,9 @@ import { MonoRepo, MonoRepoKind } from "../common/monoRepo";
 import { Package } from "../common/npmPackage";
 import * as semver from "semver";
 
-
 /**
  * Functions and utilities to update the package versions
  */
-
-
 export async function bumpVersion(context: Context, bump: string[], version: VersionChangeType, packageShortNames: string, commit?: string) {
     console.log(`Bumping ${packageShortNames} to ${version}`);
 
@@ -64,7 +60,6 @@ export async function bumpVersion(context: Context, bump: string[], version: Ver
     }
 }
 
-
 /**
  * Bump version of packages in the repo
  *
@@ -100,13 +95,18 @@ export async function bumpRepo(context: Context, versionBump: VersionChangeType,
     return context.collectVersions(true);
 }
 
-async function bumpLegacyDependencies(context:Context, versionBump: VersionChangeType) {
+async function bumpLegacyDependencies(context: Context, versionBump: VersionChangeType) {
     if (versionBump !== "patch") {
         // Assumes that we want N/N-1 testing
-        const pkg = context.fullPackageMap.get("@fluid-internal/end-to-end-tests");
+        const pkg = context.fullPackageMap.get("@fluidframework/test-end-to-end-tests")
+            || context.fullPackageMap.get("@fluid-internal/end-to-end-tests");
         if (!pkg) {
             fatal("Unable to find package @fluid-internal/end-to-end-tests");
         }
+
+        // The dependency names don't have an enforced pattern, but they do retain a stable ordering
+        // Keep a count of how many times we've encounted each dependency to properly set N-1, N-2, etc
+        const pkgFrequencies = new Map<string, number>();
         for (const { name, version, dev } of pkg.combinedDependencies) {
             if (!version.startsWith("npm:")) {
                 continue;
@@ -117,16 +117,22 @@ async function bumpLegacyDependencies(context:Context, versionBump: VersionChang
             if (split.length <= 1) {
                 continue;
             }
-            const range = split.pop();
+            const range = split.pop()!;
             const packageName = split.join("@");
             const depPackage = context.fullPackageMap.get(packageName);
             if (depPackage) {
+                const frequency = (pkgFrequencies.get(packageName) ?? 0) + 1;
+                pkgFrequencies.set(packageName, frequency);
+
                 const dep = dev ? pkg.packageJson.devDependencies : pkg.packageJson.dependencies;
 
+                // N-1 (the first time we see the package) is bumped to pre-release versions,
+                // while N-2 etc is bumped to release
+                const suffix = frequency === 1 ? "-0" : "";
                 if (typeof versionBump === "string") {
-                    dep[name] = `npm:${packageName}@^${semver.major(depPackage.version)}.${semver.minor(depPackage.version) - 1}.0`;
+                    dep[name] = `npm:${packageName}@^${semver.major(depPackage.version)}.${semver.minor(depPackage.version) - frequency + 1}.0${suffix}`;
                 } else {
-                    dep[name] = `npm:${packageName}@^${versionBump.major}.${versionBump.minor - 2}.0}`;
+                    dep[name] = `npm:${packageName}@^${versionBump.major}.${versionBump.minor - frequency}.0${suffix}}`;
                 }
 
             }
